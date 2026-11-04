@@ -1,6 +1,7 @@
 # Design
 
-Status: draft for review (Phase 0). Nothing here is implemented yet.
+Status: approved 2026-11-04. Every recommendation in section 17 was accepted.
+Decision 14 stays open until the Phase 4 load test measures it.
 
 This document is the plan for v1. It covers the architecture, the three data
 models, the protocol, the write, fan-out and reconnect paths, auth, abuse
@@ -1373,9 +1374,11 @@ the empty-bucket fixture.
 
 ---
 
-## 17. Decisions for you
+## 17. Decisions
 
-| # | Decision | My recommendation | Alternative |
+Accepted on 2026-11-04: the recommendation column is the decision.
+
+| # | Decision | Recommendation (accepted) | Alternative |
 |---|---|---|---|
 | 1 | Bucket size | 1 hour plus the `room_buckets` index (4.2) | 1 day with no index, probing back to the room's creation (Discord's approach; up to 365 probes a year for a quiet room) |
 | 2 | Rust to TypeScript types | **ts-rs 12**: derive macro, follows serde attributes (internally tagged enums become discriminated unions), exports through `cargo test`, actively maintained | **specta**: the stable line is 1.x and v2 is not stable. **typeshare**: a separate CLI and more limited support for serde enum tagging |
