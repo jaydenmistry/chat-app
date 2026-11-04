@@ -1431,24 +1431,19 @@ TypeScript 7.0.2, Vitest 5.1.0, Playwright 1.64.1; ScyllaDB image 2026.3.4.
 
 ---
 
-## 18. To verify in Phase 1
+## 18. Verification status
 
-These claims shape the design, and I haven't yet confirmed them against
-running software or current docs:
+Claims that shape the design, checked against running software or current
+docs. Updated at the end of each phase.
 
-1. Traefik's Docker provider load-balances across the containers of a service
-   scaled with `deploy.replicas` under Dokploy's injected labels, and skips
-   containers whose healthcheck is failing.
-2. Scylla's commitlog sync settings and their flag names in the 2026.x image
-   (decision 14).
-3. `__Host-` and `Secure` cookies work on `http://localhost` in Chromium,
-   Firefox and WebKit (Playwright's three engines). If not, dev uses a
-   non-prefixed cookie name behind a config flag.
-4. The redis-rs 1.x async pub/sub API: confirm it reports subscribe
-   confirmations and disconnects, and that `PING` works on a subscribed
-   connection.
-5. The current OWASP Argon2id parameters.
-6. The k6 WebSocket module to use (`k6/websockets`) in the current k6
-   release.
-7. Scylla `TimeWindowCompactionStrategy` options and `tombstone_gc` settings
-   for TTL-heavy tables on a single node.
+| # | Claim | Status |
+|---|---|---|
+| 1 | Traefik's Docker provider load-balances across `deploy.replicas` containers under Dokploy's injected labels and skips unhealthy ones | open (Phase 4). Locally, Traefik's file provider balanced round robin across both servers (3 and 3 of 6 requests) |
+| 2 | Scylla commitlog sync settings in the 2026.x image (decision 14) | open (Phase 4) |
+| 3 | `__Host-` and `Secure` cookies work on `http://localhost` | Chromium: verified by the Playwright suite (Phase 1). Firefox and WebKit: run in CI |
+| 4 | redis-rs 1.x pub/sub reports subscribe confirmations and disconnects; `PING` works when subscribed | open (Phase 2) |
+| 5 | OWASP Argon2id minimums | verified 2026-11-04: m=19456 KiB, t=2, p=1 is one of the listed minimum configurations, and is what the code sets |
+| 6 | k6 WebSocket module | open (Phase 4) |
+| 7 | `TimeWindowCompactionStrategy` options and `tombstone_gc` for TTL tables | TWCS options accepted by Scylla 2026.3.4 (the migration applies). `tombstone_gc`: open |
+| 8 | Tablets limitations | Scylla 2026.3.4 advertises `LWT_WITH_TABLETS` and `COUNTERS_WITH_TABLETS`, so the 2025.1 limits no longer apply. The design still uses neither |
+| 9 | Driver connections from outside Docker | Scylla advertises its container IP; a client on the host reaching it through a mapped port must have Scylla advertise `127.0.0.1` (`--broadcast-rpc-address`). Only the integration tests do this; inside compose, servers use `scylla:9042` |
