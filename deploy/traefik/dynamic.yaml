@@ -1,0 +1,19 @@
+# Local load balancer: every request goes to either server instance, round
+# robin, with no sticky sessions. An instance that fails /readyz is taken out
+# of rotation until it passes again.
+http:
+  routers:
+    chat:
+      entryPoints: [web]
+      rule: PathPrefix(`/`)
+      service: chat
+  services:
+    chat:
+      loadBalancer:
+        servers:
+          - url: http://server-1:8080
+          - url: http://server-2:8080
+        healthCheck:
+          path: /readyz
+          interval: 2s
+          timeout: 1s

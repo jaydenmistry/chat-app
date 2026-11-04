@@ -1036,7 +1036,8 @@ server/                    Cargo workspace
   migrations/postgres      sqlx migrations
   migrations/scylla        numbered .cql files plus a small runner (applied by `migrate`)
 web/                       React + Vite; src/protocol/generated/ holds the ts-rs output
-deploy/                    Dockerfile, compose.yaml (dev), compose.dokploy.yaml, traefik/, README.md
+compose.yaml               local development stack (at the root so `docker compose up` just works)
+deploy/                    Dockerfile, compose.dokploy.yaml, traefik/, README.md
 docs/                      design.md, architecture.md, protocol.md, data-model.md,
                            performance.md, testing.md, decisions/
 load/                      k6 scripts
@@ -1047,8 +1048,8 @@ caught it (15.4).
 
 ### 14.2 Local development
 
-`docker compose up` (from `deploy/compose.yaml`, with `COMPOSE_FILE` set in
-the root `.env.example`) starts:
+`docker compose up`, from the repository root, starts the services below.
+Every setting has a development default, so no `.env` file is needed:
 
 | Service | Notes |
 |---|---|
@@ -1064,9 +1065,12 @@ Running migrations in one one-shot service avoids two instances racing to
 change the Scylla schema. Rust images build with BuildKit cache mounts for the
 cargo registry and `target`, so rebuilds are incremental.
 
-Memory: I will measure it in Phase 1 and put the number in the README. Until
-then, the only figure I can give is the Scylla limit we set (1 GB), and Scylla
-uses some memory beyond that limit.
+Memory, measured in Phase 1 with `docker stats` on an idle stack after the
+end-to-end tests (4 vCPU, 16 GB host): Scylla 82 MiB, Postgres 51 MiB, each
+server 22 MiB, Traefik 19 MiB, Redis 6 MiB, Vite about 300 MiB. Scylla is
+capped at 1 GB (`--memory 1G`) and grows toward the cap under load, so budget
+at least 2 GB for the stack. Building the Rust image in release mode is the
+heaviest step; its peak was not measured.
 
 Image names take a registry prefix variable. Docker Hub's anonymous pull
 limit already blocked pulls in this sandbox, and `mirror.gcr.io` worked.

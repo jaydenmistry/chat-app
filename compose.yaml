@@ -1,0 +1,138 @@
+# Local development: `docker compose up`.
+#
+# Starts Postgres, Redis, a single-node ScyllaDB, a one-shot migration job,
+# two identical server instances behind Traefik (round robin, no sticky
+# sessions), and the Vite dev server. Open http://localhost:5173.
+#
+# Every setting has a development default, so no .env file is needed. To
+# override one (for example GitHub sign-in), copy .env.example to .env.
+# IMAGE_REGISTRY switches where images come from, e.g. mirror.gcr.io when
+# Docker Hub's anonymous pull limit gets in the way.
+
+name: chat
+
+x-server: &server
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+    args:
+      REGISTRY: ${IMAGE_REGISTRY:-docker.io}
+  image: chat-app:dev
+  restart: unless-stopped
+  environment:
+    PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5173}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    LOG_FORMAT: ${LOG_FORMAT:-pretty}
+    RUST_LOG: ${RUST_LOG:-info}
+    DATABASE_URL: postgres://${POSTGRES_USER:-chat}:${POSTGRES_PASSWORD:-chat}@postgres:5432/${POSTGRES_DB:-chat}
+    REDIS_URL: redis://redis:6379
+    SCYLLA_NODES: scylla:9042
+    SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-chat}
+    GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+    GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: ${IMAGE_REGISTRY:-docker.io}/library/postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chat}
+      POSTGRES_DB: ${POSTGRES_DB:-chat}
+    ports:
+      # Loopback only, for psql and `cargo sqlx prepare`.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: ${IMAGE_REGISTRY:-docker.io}/library/redis:8.10.3-alpine
+    restart: unless-stopped
+    # AOF so sessions survive a restart; noeviction because sessions and
+    # idempotency keys must never be evicted to make room.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  scylla:
+    image: ${IMAGE_REGISTRY:-docker.io}/scylladb/scylla:2026.3.4
+    restart: unless-stopped
+    # One shard and 1 GB, in developer mode (skips the production checks for
+    # XFS and tuned I/O, which a laptop disk won't pass).
+    command: ["--smp", "1", "--memory", "1G", "--overprovisioned", "1", "--developer-mode", "1"]
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' > /dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  migrate:
+    <<: *server
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+
+  server-1:
+    <<: *server
+
+  server-2:
+    <<: *server
+
+  lb:
+    image: ${IMAGE_REGISTRY:-docker.io}/library/traefik:v3.7.17
+    restart: unless-stopped
+    command:
+      - --entrypoints.web.address=:8080
+      - --providers.file.filename=/etc/traefik/dynamic.yaml
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./deploy/traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+    depends_on:
+      - server-1
+      - server-2
+
+  web:
+    image: ${IMAGE_REGISTRY:-docker.io}/library/node:26.13.0-alpine3.24
+    restart: unless-stopped
+    working_dir: /web
+    command: ["sh", "-c", "npm install --global pnpm@12.16.1 && pnpm install --frozen-lockfile && pnpm dev"]
+    environment:
+      BACKEND_URL: http://lb:8080
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./web:/web
+      # Installed inside the container, so host and container node_modules
+      # (possibly built for different platforms) never mix.
+      - web-node-modules:/web/node_modules
+    depends_on:
+      - lb
+
+volumes:
+  postgres-data:
+  redis-data:
+  scylla-data:
+  web-node-modules:
