@@ -20,7 +20,15 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        // Lets a machine with its own Chromium build run the tests without
+        // `playwright install`. CI leaves it unset.
+        launchOptions: process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {},
+      },
+    },
     { name: "firefox", use: { ...devices["Desktop Firefox"] } },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
