@@ -60,6 +60,11 @@ impl From<SchemaAgreementError> for MigrateError {
 
 /// Connects to the cluster. With `keyspace`, unqualified table names in
 /// queries refer to that keyspace.
+///
+/// A successful connect doesn't mean queries work yet: right after startup
+/// Scylla accepts the first connection before its per-shard port is up, and
+/// the driver's pool can come up broken for a moment. Callers that need the
+/// cluster usable should also wait for [`ping`] to succeed.
 pub async fn connect(
     nodes: &[String],
     keyspace: Option<&str>,

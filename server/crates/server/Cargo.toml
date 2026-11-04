@@ -13,10 +13,13 @@ argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
 rand.workspace = true
+redis.workspace = true
 reqwest.workspace = true
+scylla.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
@@ -30,3 +33,11 @@ testcontainers-modules.workspace = true
 
 [lints]
 workspace = true
+
+# A custom runner instead of libtest: it starts Postgres, Redis and Scylla
+# once, runs every test against them concurrently, then removes the
+# containers. See tests/integration/main.rs.
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+harness = false

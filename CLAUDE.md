@@ -36,6 +36,11 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
   `mirror.gcr.io/library/<image>` for official images.
   `scylladb/scylla` pulled from Docker Hub fine.
 - Postgres 16 client and Redis 7 server are installed locally; k6 is not.
+- Run integration tests with `IMAGE_REGISTRY=mirror.gcr.io cargo test -p server --test integration`.
+- sqlx compile-time checks: dev Postgres container `chat-dev-pg` on :5432 (chat/chat);
+  after changing queries run `cargo sqlx prepare --workspace` with
+  `DATABASE_URL=postgres://chat:chat@localhost:5432/chat`.
+- Rust 1.99.1 (pinned in server/rust-toolchain.toml); Node 26 LTS at /opt/node26/bin.
 
 ## Status
 
