@@ -1,0 +1,184 @@
+# Runs on every push and pull request. Every action is pinned to a commit SHA
+# (the tag is in the comment), so a moved tag can't change what runs here.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Docker Hub rate-limits anonymous pulls from shared runner IPs.
+  IMAGE_REGISTRY: mirror.gcr.io
+  CARGO_DENY_VERSION: 0.20.2
+  SQLX_CLI_VERSION: 0.9.0
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, tests, sqlx, generated types)
+    runs-on: ubuntu-24.04
+    services:
+      # For `cargo sqlx prepare --check`, which compares the committed query
+      # metadata in server/.sqlx against a real, migrated database.
+      postgres:
+        image: mirror.gcr.io/library/postgres:18.6-alpine
+        env:
+          POSTGRES_USER: chat
+          POSTGRES_PASSWORD: chat
+          POSTGRES_DB: chat
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U chat" --health-interval 2s --health-timeout 3s --health-retries 30
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rust-toolchain.toml makes rustup install the pinned toolchain.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+      - name: cache cargo tools
+        id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/sqlx
+            ~/.cargo/bin/cargo-sqlx
+          key: sqlx-cli-${{ env.SQLX_CLI_VERSION }}-${{ runner.os }}
+      - if: steps.tools.outputs.cache-hit != 'true'
+        run: cargo install --locked sqlx-cli@${{ env.SQLX_CLI_VERSION }} --no-default-features --features rustls,postgres
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test (unit and integration, against real containers)
+        run: cargo test --workspace
+      - name: generated TypeScript is up to date
+        working-directory: .
+        run: |
+          # `cargo test` above regenerated web/src/protocol/generated.
+          if [ -n "$(git status --porcelain web/src/protocol/generated)" ]; then
+            git status --porcelain web/src/protocol/generated
+            git diff web/src/protocol/generated
+            echo "::error::Generated TypeScript is stale. Run 'cargo test -p protocol' and commit web/src/protocol/generated."
+            exit 1
+          fi
+      - name: sqlx query metadata is up to date
+        env:
+          DATABASE_URL: postgres://chat:chat@localhost:5432/chat
+        run: |
+          sqlx migrate run --source migrations/postgres
+          cargo sqlx prepare --workspace --check
+
+  deny:
+    name: cargo deny (advisories, licenses, sources)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: cache cargo-deny
+        id: deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}-${{ runner.os }}
+      - if: steps.deny.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny@${{ env.CARGO_DENY_VERSION }}
+      - run: cargo deny --manifest-path server/Cargo.toml check
+
+  web:
+    name: web (lint, typecheck, unit tests, build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  e2e:
+    name: e2e (Playwright against the full compose stack)
+    runs-on: ubuntu-24.04
+    needs: [rust, web]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build the server image (layers cached in GitHub Actions)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: REGISTRY=${{ env.IMAGE_REGISTRY }}
+          tags: chat-app:dev
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: start the stack
+        run: |
+          docker compose up -d --no-build
+          # Ready when a request through Vite, Traefik and a server succeeds.
+          for i in $(seq 1 90); do
+            if curl -fsS http://localhost:5173/api/auth/config > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: cache Playwright browsers
+        id: browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+        working-directory: web
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium firefox webkit
+        working-directory: web
+      - run: pnpm e2e
+        working-directory: web
+        env:
+          CI: "true"
+
+      - if: failure()
+        run: docker compose logs --no-color > compose.log
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-failure
+          path: |
+            web/playwright-report
+            web/test-results
+            compose.log
