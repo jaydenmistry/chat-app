@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/protocol", "crates/storage", "crates/server"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Every version is pinned exactly. Upgrades are deliberate commits.
+[workspace.dependencies]
+protocol = { path = "crates/protocol" }
+storage = { path = "crates/storage" }
+
+anyhow = "=1.0.104"
+argon2 = "=0.6.0"
+axum = "=0.8.9"
+base64 = "=0.23.1"
+futures-util = "=0.3.34"
+rand = "=0.10.3"
+redis = { version = "=1.8.1", default-features = false, features = ["aio", "tokio-comp", "connection-manager", "script", "streams"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json"] }
+scylla = { version = "=1.9.0", features = ["time-03"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "uuid", "time", "ipnet"] }
+testcontainers-modules = { version = "=0.15.0", features = ["postgres", "redis", "scylladb"] }
+thiserror = "=2.0.21"
+time = { version = "=0.3.55", features = ["serde", "formatting", "parsing"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+tower-http = { version = "=0.7.1", features = ["request-id", "trace", "fs", "timeout", "util"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
+ts-rs = { version = "=12.0.1", features = ["uuid-impl"] }
+uuid = { version = "=1.29.0", features = ["v7", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

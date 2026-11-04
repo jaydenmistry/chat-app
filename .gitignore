@@ -53,3 +53,10 @@ htmlcov/
 # Build output
 dist/
 build/
+
+# Rust
+target/
+
+# Playwright
+web/test-results/
+web/playwright-report/
