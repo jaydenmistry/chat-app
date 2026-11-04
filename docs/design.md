@@ -686,7 +686,7 @@ Without email verification, linking would let someone register a victim's
 email with a password and then take over their GitHub sign-in, or the reverse.
 
 **Guest.** `POST /api/auth/guest` creates a user with a generated handle
-(`guest_7f3k`) and `expires_at = now + 24 h`, plus a session. It is rate
+(`guest_` plus 6 random characters) and `expires_at = now + 24 h`, plus a session. It is rate
 limited per IP.
 
 **Origin checks.** Every state-changing REST request (POST, PUT, PATCH,
