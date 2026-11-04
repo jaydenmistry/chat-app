@@ -123,10 +123,18 @@ services:
       BACKEND_URL: http://lb:8080
     ports:
       - "127.0.0.1:5173:5173"
+    # Only the files Vite needs are mounted, not the whole web/ directory:
+    # node_modules lives in a container volume, so host and container
+    # dependencies (possibly built for different platforms) never mix, and
+    # Docker never creates a root-owned web/node_modules on the host that
+    # would break a later `pnpm install` there.
     volumes:
-      - ./web:/web
-      # Installed inside the container, so host and container node_modules
-      # (possibly built for different platforms) never mix.
+      - ./web/src:/web/src
+      - ./web/index.html:/web/index.html:ro
+      - ./web/package.json:/web/package.json:ro
+      - ./web/pnpm-lock.yaml:/web/pnpm-lock.yaml:ro
+      - ./web/vite.config.ts:/web/vite.config.ts:ro
+      - ./web/tsconfig.json:/web/tsconfig.json:ro
       - web-node-modules:/web/node_modules
     depends_on:
       - lb
