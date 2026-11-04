@@ -66,7 +66,7 @@ impl CookiePolicy {
     }
 
     /// The cookie's value, from any `Cookie` header.
-    pub fn get<'a>(self, headers: &'a HeaderMap, cookie: Cookie) -> Option<&'a str> {
+    pub fn get(self, headers: &HeaderMap, cookie: Cookie) -> Option<&str> {
         let name = self.name(cookie);
         headers
             .get_all(COOKIE)
