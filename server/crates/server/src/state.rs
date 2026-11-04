@@ -9,7 +9,7 @@ use redis::aio::ConnectionManager;
 use scylla::client::session::Session;
 use sqlx::PgPool;
 
-use crate::{auth::password::PasswordHasher, config::Config};
+use crate::{auth::password::PasswordHasher, config::Config, http::cookies::CookiePolicy};
 
 /// Cloned for every request, so it is a single `Arc`: one atomic increment
 /// per clone, however many fields `Inner` grows.
@@ -25,6 +25,8 @@ pub struct Inner {
     pub scylla: Session,
     pub http: reqwest::Client,
     pub passwords: PasswordHasher,
+    /// Secure `__Host-` cookies over HTTPS, plain ones on http://localhost.
+    pub cookies: CookiePolicy,
     /// Set when shutdown begins, so `/readyz` turns the load balancer away.
     pub shutting_down: AtomicBool,
 }

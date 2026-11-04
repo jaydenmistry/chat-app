@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 use crate::{
     auth::password::PasswordHasher,
     config::Config,
+    http::cookies::CookiePolicy,
     state::{AppState, Inner},
 };
 
@@ -42,6 +43,13 @@ pub async fn serve(
         .timeout(Duration::from_secs(10))
         .build()
         .context("building the HTTP client")?;
+    let cookies = CookiePolicy::for_public_url(&config.public_url);
+    if !cookies.is_secure() {
+        tracing::warn!(
+            public_url = config.public_url,
+            "PUBLIC_URL is not https: cookies are sent without Secure (development only)"
+        );
+    }
     let state = AppState::new(Inner {
         config,
         pg: stores.pg,
@@ -49,6 +57,7 @@ pub async fn serve(
         scylla: stores.scylla,
         http,
         passwords: PasswordHasher::new(MAX_CONCURRENT_HASHES),
+        cookies,
         shutting_down: AtomicBool::new(false),
     });
 

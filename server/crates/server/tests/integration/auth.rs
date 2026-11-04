@@ -264,7 +264,7 @@ pub async fn state_changing_requests_need_an_allowed_origin(infra: Arc<Infra>) {
     for origin in [
         None,
         Some("https://evil.example"),
-        Some("http://app.test.evil.example"),
+        Some("https://app.test.evil.example"),
     ] {
         let mut request = app.client.post(app.url("/api/auth/signup")).json(&body);
         if let Some(origin) = origin {
@@ -327,4 +327,38 @@ pub async fn malformed_requests_get_api_errors(infra: Arc<Infra>) {
             "{cookie}"
         );
     }
+}
+
+/// Over plain HTTP (local development) the cookie drops `Secure` and the
+/// `__Host-` prefix, which WebKit would otherwise refuse on localhost.
+pub async fn plain_http_uses_development_cookies(infra: Arc<Infra>) {
+    let app = TestApp::spawn_with(&infra, |config| {
+        config.public_url = "http://localhost:5173".into();
+        config.allowed_origins = vec!["http://localhost:5173".into()];
+    })
+    .await;
+    let resp = app
+        .client
+        .post(app.url("/api/auth/guest"))
+        .header(header::ORIGIN, "http://localhost:5173")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert!(set_cookie(&resp, "__Host-session").is_none());
+    let cookie = set_cookie(&resp, "session").expect("plain session cookie");
+    assert!(
+        cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"),
+        "{cookie}"
+    );
+    assert!(!cookie.contains("Secure"), "{cookie}");
+
+    let pair = cookie.split(';').next().unwrap();
+    assert!(app.me(pair).await.is_ok());
+    // The production cookie name means nothing to a development server.
+    let token = pair.trim_start_matches("session=");
+    assert_eq!(
+        app.me(&format!("__Host-session={token}")).await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
 }

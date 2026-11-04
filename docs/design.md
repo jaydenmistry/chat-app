@@ -651,6 +651,12 @@ The token is 32 random bytes, base64url. The `__Host-` prefix makes the
 browser require `Secure`, `Path=/` and no `Domain`, so no other
 `*.jmistry.com` host can set or overwrite it.
 
+Local development runs on `http://localhost`, where WebKit refuses `Secure`
+cookies (found by the Playwright suite in Phase 1). When `PUBLIC_URL` is not
+`https://`, the server drops `Secure` and the prefix (`session=...`) and logs
+a warning at startup. The choice follows `PUBLIC_URL` rather than a separate
+flag, so an HTTPS deployment cannot run with insecure cookies by mistake.
+
 Redis stores `sess:<SHA-256(token)>`. Postgres stores the same hash with
 metadata (`sessions`). A leaked Redis dump or database backup contains no
 usable tokens. A new token is issued at every sign-in, which prevents session
@@ -1440,7 +1446,7 @@ docs. Updated at the end of each phase.
 |---|---|---|
 | 1 | Traefik's Docker provider load-balances across `deploy.replicas` containers under Dokploy's injected labels and skips unhealthy ones | open (Phase 4). Locally, Traefik's file provider balanced round robin across both servers (3 and 3 of 6 requests) |
 | 2 | Scylla commitlog sync settings in the 2026.x image (decision 14) | open (Phase 4) |
-| 3 | `__Host-` and `Secure` cookies work on `http://localhost` | Chromium: verified by the Playwright suite (Phase 1). Firefox and WebKit: run in CI |
+| 3 | `__Host-` and `Secure` cookies work on `http://localhost` | Chromium and Firefox accept them; WebKit refuses them (CI, Phase 1). Development over plain HTTP therefore uses unprefixed, non-`Secure` cookies; see section 7 |
 | 4 | redis-rs 1.x pub/sub reports subscribe confirmations and disconnects; `PING` works when subscribed | open (Phase 2) |
 | 5 | OWASP Argon2id minimums | verified 2026-11-04: m=19456 KiB, t=2, p=1 is one of the listed minimum configurations, and is what the code sets |
 | 6 | k6 WebSocket module | open (Phase 4) |

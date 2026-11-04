@@ -27,7 +27,7 @@ use crate::{
     },
     http::{
         client_ip::ClientIp,
-        cookies,
+        cookies::Cookie,
         error::{ApiJson, AppError},
     },
     state::AppState,
@@ -173,7 +173,7 @@ pub async fn logout(
     }
     Ok((
         StatusCode::NO_CONTENT,
-        [(SET_COOKIE, cookies::clear(cookies::SESSION))],
+        [(SET_COOKIE, state.cookies.clear(Cookie::Session))],
     )
         .into_response())
 }
@@ -221,7 +221,7 @@ pub async fn revoke_session(
     if session_id == session.session_id {
         Ok((
             StatusCode::NO_CONTENT,
-            [(SET_COOKIE, cookies::clear(cookies::SESSION))],
+            [(SET_COOKIE, state.cookies.clear(Cookie::Session))],
         )
             .into_response())
     } else {
@@ -232,11 +232,10 @@ pub async fn revoke_session(
 pub async fn github_start(State(state): State<AppState>) -> Result<Response, AppError> {
     let github = state.config.github.as_ref().ok_or(AppError::NotFound)?;
     let started = github::start(&state, github).await?;
-    let nonce_cookie = cookies::set(
-        cookies::OAUTH_NONCE,
-        &started.nonce,
-        Duration::from_secs(600),
-    );
+    let nonce_cookie =
+        state
+            .cookies
+            .set(Cookie::OauthNonce, &started.nonce, Duration::from_secs(600));
     let location = HeaderValue::from_str(&started.authorize_url).map_err(AppError::internal)?;
     Ok((
         StatusCode::SEE_OTHER,
@@ -261,7 +260,7 @@ pub async fn github_callback(
     Query(params): Query<CallbackParams>,
 ) -> Result<Response, AppError> {
     let github = state.config.github.as_ref().ok_or(AppError::NotFound)?;
-    let clear_nonce = (SET_COOKIE, cookies::clear(cookies::OAUTH_NONCE));
+    let clear_nonce = (SET_COOKIE, state.cookies.clear(Cookie::OauthNonce));
     let failed = |reason: &str| {
         tracing::warn!(reason, "github sign-in failed");
         (
@@ -280,7 +279,7 @@ pub async fn github_callback(
             params.error.as_deref().unwrap_or("missing code or state"),
         ));
     };
-    let cookie_nonce = cookies::get(&headers, cookies::OAUTH_NONCE);
+    let cookie_nonce = state.cookies.get(&headers, Cookie::OauthNonce);
     let user = match github::finish(&state, github, &code, &oauth_state, cookie_nonce).await {
         Ok(user) => user,
         Err(github::GithubError::App(err @ AppError::Unavailable(_))) => return Err(err),

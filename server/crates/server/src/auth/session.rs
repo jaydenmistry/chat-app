@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::token,
-    http::{cookies, error::AppError},
+    http::{cookies::Cookie, error::AppError},
     state::AppState,
 };
 
@@ -71,7 +71,7 @@ pub async fn start(
     }
 
     let max_age = Duration::try_from(expires_at - now).unwrap_or_default();
-    Ok(cookies::set(cookies::SESSION, &token, max_age))
+    Ok(state.cookies.set(Cookie::Session, &token, max_age))
 }
 
 /// Ends a session in both stores. Deletes the Redis key first: that is what
@@ -104,7 +104,10 @@ impl FromRequestParts<AppState> for CurrentSession {
     ) -> Result<Self, Self::Rejection> {
         const SIGN_IN: AppError = AppError::Unauthorized("sign in required");
 
-        let token = cookies::get(&parts.headers, cookies::SESSION).ok_or(SIGN_IN)?;
+        let token = state
+            .cookies
+            .get(&parts.headers, Cookie::Session)
+            .ok_or(SIGN_IN)?;
         let hash = token::hash_session_token(token).ok_or(SIGN_IN)?;
         let live = sessions::load_live(&mut state.redis.clone(), &hash)
             .await?

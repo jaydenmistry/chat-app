@@ -42,7 +42,7 @@ async fn token(
     let challenge = fake.codes.lock().unwrap().remove(get("code"));
     let valid = get("client_id") == CLIENT_ID
         && get("client_secret") == CLIENT_SECRET
-        && get("redirect_uri") == "http://app.test/api/auth/github/callback"
+        && get("redirect_uri") == "https://app.test/api/auth/github/callback"
         && challenge
             .is_some_and(|c| c == server::auth::github::pkce_challenge(get("code_verifier")));
     Json(if valid {
@@ -116,7 +116,7 @@ async fn start(app: &TestApp) -> Started {
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(
         query["redirect_uri"],
-        "http://app.test/api/auth/github/callback"
+        "https://app.test/api/auth/github/callback"
     );
     Started {
         state: query["state"].clone(),

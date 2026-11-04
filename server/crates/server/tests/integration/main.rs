@@ -48,6 +48,7 @@ const TESTS: &[(&str, TestFn)] = tests![
     auth::guest_session_ends_with_the_account,
     auth::state_changing_requests_need_an_allowed_origin,
     auth::malformed_requests_get_api_errors,
+    auth::plain_http_uses_development_cookies,
     github::github_sign_in_with_pkce,
     github::github_callback_rejects_bad_state_and_nonce,
     github::github_disabled_without_config,

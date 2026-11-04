@@ -21,7 +21,9 @@ const REDIS_TAG: &str = "8.10.3-alpine";
 const SCYLLA_TAG: &str = "2026.3.4";
 
 pub const KEYSPACE: &str = "chat_test";
-pub const TEST_ORIGIN: &str = "http://app.test";
+/// https, so tests exercise the production cookie attributes (`__Host-`,
+/// `Secure`). The server itself is reached over plain HTTP on loopback.
+pub const TEST_ORIGIN: &str = "https://app.test";
 
 pub struct Infra {
     _postgres: ContainerAsync<Postgres>,
