@@ -61,8 +61,9 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 
 - Phase 0: design approved 2026-11-04 (all recommendations accepted).
 - Phase 1: approved 2026-11-05.
-- Phase 2: built 2026-11-05; awaiting review. design.md section 19 lists what's
-  deferred to Phases 3 and 4.
+- Phase 2: approved 2026-11-05 (with: add member.joined/member.left frames in
+  Phase 3).
+- Phase 3: in progress.
 - (Phase 1 notes:) Dokploy compose and deploy guide
   deferred to Phase 4. Rate limits on sign-up/login are Phase 4: don't expose
   the demo publicly before then.
