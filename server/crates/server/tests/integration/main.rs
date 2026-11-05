@@ -48,6 +48,7 @@ const TESTS: &[(&str, TestFn)] = tests![
     ids::instances_get_distinct_worker_ids,
     ids::a_stolen_lease_stops_ids_and_moves_on,
     ids::shutdown_releases_the_lease,
+    ids::quarantine_keeps_the_lease_alive,
     messages::history_pages_across_real_buckets,
     messages::insert_is_idempotent,
     messages::expired_messages_leave_empty_buckets,

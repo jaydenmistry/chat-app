@@ -22,6 +22,10 @@ struct Instance {
 }
 
 async fn start(infra: &Infra) -> Instance {
+    start_with(infra, FAST).await
+}
+
+async fn start_with(infra: &Infra, timings: LeaseTimings) -> Instance {
     let redis = storage::redisdb::connect(&infra.redis_url).await.unwrap();
     let generator = Arc::new(IdGenerator::new(0));
     let (stop, stopped) = watch::channel(false);
@@ -29,7 +33,7 @@ async fn start(infra: &Infra) -> Instance {
         Arc::clone(&generator),
         redis,
         Uuid::now_v7(),
-        FAST,
+        timings,
         stopped,
     ));
     wait_ready(&generator).await;
@@ -123,4 +127,32 @@ pub async fn shutdown_releases_the_lease(infra: Arc<Infra>) {
         hwm.is_some(),
         "the high-water mark is recorded for the next holder"
     );
+}
+
+/// The production timings make the quarantine as long as the lease TTL. The
+/// lease must be renewed during quarantine, or it expires just as the
+/// quarantine ends and the instance never becomes ready. (Found by the
+/// compose stack, which uses the real timings; these tests had used a zero
+/// quarantine.)
+pub async fn quarantine_keeps_the_lease_alive(infra: Arc<Infra>) {
+    let started = tokio::time::Instant::now();
+    let instance = start_with(
+        &infra,
+        LeaseTimings {
+            ttl: Duration::from_secs(2),
+            renew_every: Duration::from_millis(300),
+            quarantine: Duration::from_secs(3),
+            max_clock_skew: Duration::from_millis(500),
+        },
+    )
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "IDs issued before the quarantine ended"
+    );
+    let worker = instance.generator.worker().unwrap();
+    // Still the same worker ID: the lease was never lost.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(instance.generator.worker(), Some(worker));
+    assert!(instance.generator.is_ready());
 }

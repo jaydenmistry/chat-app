@@ -6,7 +6,8 @@
 //!
 //! 1. Acquire `worker:<n>` with `SET NX PX`, starting from a random `n`.
 //! 2. Wait one lease period before issuing IDs (quarantine), so a previous
-//!    holder that lost its key in a Redis restart notices first.
+//!    holder that lost its key in a Redis restart notices first. The lease is
+//!    renewed throughout.
 //! 3. Renew every few seconds, only if the key still holds our instance ID.
 //! 4. Treat the lease as valid only until `renewal sent + TTL - 1 s`, by the
 //!    local monotonic clock. Redis starts its countdown after receiving the
@@ -264,10 +265,10 @@ pub async fn run_lease(
             .await
             .unwrap_or(None);
         tracing::info!(worker, "acquired worker ID; in quarantine");
-        if wait_or_shutdown(&mut shutdown, timings.quarantine).await {
-            release(&mut redis.clone(), worker, &instance, &generator).await;
-            return;
-        }
+        // The lease is renewed from the start; quarantine only delays using
+        // it. (Waiting out the quarantine without renewing would let the key
+        // expire, since the quarantine is as long as the TTL.)
+        let usable_from = Instant::now() + timings.quarantine;
 
         let mut installed = false;
         loop {
@@ -301,7 +302,7 @@ pub async fn run_lease(
                         generator.suspend();
                     } else if installed {
                         generator.extend(valid_until);
-                    } else {
+                    } else if Instant::now() >= usable_from {
                         generator.install(worker, hwm, valid_until);
                         installed = true;
                         tracing::info!(worker, "issuing message IDs");

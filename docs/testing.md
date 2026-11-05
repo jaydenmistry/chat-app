@@ -66,6 +66,14 @@ coverage. A room whose most recent messages were all a guest's has expired
 buckets at its newest end. `empty_newest_buckets_dont_hide_older_history`
 was added for that layout, and it catches the plant.
 
+A bug none of these caught, found by running the compose stack: the
+worker-ID lease wasn't renewed during its quarantine. With the production
+timings (quarantine as long as the lease TTL) the key expired just as the
+quarantine ended, and the instance re-acquired forever, never ready. The
+integration tests used a zero quarantine for speed, so they never exercised
+it. `ids::quarantine_keeps_the_lease_alive` now uses a quarantine longer than
+the TTL; against the old code it fails with "lease never became ready".
+
 Not covered by an integration test: a slow consumer being disconnected.
 TCP buffers absorb far more than the 256-frame queue before the server's
 writer blocks, so a test would need megabytes of traffic. The hub's unit test
