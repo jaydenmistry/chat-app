@@ -17,6 +17,7 @@ mod auth;
 mod github;
 mod health;
 mod infra;
+mod messages;
 mod migrations;
 
 use std::{future::Future, pin::Pin, process::ExitCode, sync::Arc, time::Duration};
@@ -39,6 +40,9 @@ const TESTS: &[(&str, TestFn)] = tests![
     health::request_ids_are_assigned_and_propagated,
     health::unknown_api_routes_are_json_404,
     migrations::scylla_migrations_apply_once,
+    messages::history_pages_across_real_buckets,
+    messages::insert_is_idempotent,
+    messages::expired_messages_leave_empty_buckets,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

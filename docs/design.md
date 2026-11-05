@@ -184,7 +184,7 @@ rooms (
   is_demo             boolean not null default false,
   dm_key              text unique,            -- 'lowuuid:highuuid', DMs only
   message_expiry_at   timestamptz,            -- see 11.3
-  history_floor       bigint not null default 0,  -- pagination stops here
+  history_floor       bigint not null default 0,  -- lowest visible message ID
   check ((kind = 'dm') = (dm_key is not null))
 )
 
@@ -836,7 +836,7 @@ JOIN rooms r ON r.id = s.room_id
 WHERE s.tsv @@ websearch_to_tsquery('english', $2)
   AND NOT s.deleted
   AND (s.expires_at IS NULL OR s.expires_at > now())
-  AND s.message_id > r.history_floor
+  AND s.message_id >= r.history_floor
   AND ($3::uuid IS NULL OR s.room_id = $3)
   AND ($4::bigint IS NULL OR s.message_id < $4)      -- cursor
 ORDER BY s.message_id DESC

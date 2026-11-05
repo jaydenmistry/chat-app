@@ -189,3 +189,33 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::E
     .fetch_optional(pool)
     .await
 }
+
+/// Live users only: an expired guest the cleanup job hasn't deleted yet is
+/// treated as gone.
+pub async fn find_by_handle(pool: &PgPool, handle: &str) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as!(
+        User,
+        r#"
+        SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
+        FROM users WHERE handle = $1 AND (expires_at IS NULL OR expires_at > now())
+        "#,
+        handle,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Profiles for message authors and DM peers, at most 200 per call.
+pub async fn find_many(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<User>, sqlx::Error> {
+    sqlx::query_as!(
+        User,
+        r#"
+        SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
+        FROM users WHERE id = ANY($1)
+        LIMIT 200
+        "#,
+        ids,
+    )
+    .fetch_all(pool)
+    .await
+}

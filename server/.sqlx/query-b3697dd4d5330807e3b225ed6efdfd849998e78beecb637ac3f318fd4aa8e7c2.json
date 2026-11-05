@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM memberships WHERE room_id = $1 AND user_id = $2 AND role = 'member'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3697dd4d5330807e3b225ed6efdfd849998e78beecb637ac3f318fd4aa8e7c2"
+}
