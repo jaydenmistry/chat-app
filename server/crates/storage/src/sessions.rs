@@ -223,6 +223,22 @@ pub async fn extend_live(
     Ok(extended == 1)
 }
 
+/// Which of these sessions still exist, in one pipelined round trip. Used to
+/// close sockets whose session ended while a revocation event was missed.
+pub async fn live_exists_many(
+    conn: &mut ConnectionManager,
+    hashes: &[TokenHash],
+) -> RedisResult<Vec<bool>> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut pipe = redis::pipe();
+    for hash in hashes {
+        pipe.cmd("EXISTS").arg(live_key(hash));
+    }
+    pipe.query_async(conn).await
+}
+
 pub async fn delete_live(conn: &mut ConnectionManager, hash: &TokenHash) -> RedisResult<()> {
     redis::cmd("DEL")
         .arg(live_key(hash))

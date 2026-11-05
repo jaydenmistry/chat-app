@@ -30,10 +30,22 @@ use crate::{
         cookies::Cookie,
         error::{ApiJson, AppError},
     },
+    realtime::events::{self, Event},
     state::AppState,
 };
 
 const WRONG_CREDENTIALS: AppError = AppError::Unauthorized("wrong email or password");
+
+/// Closes the session's sockets on every instance. Best effort: each
+/// instance also re-checks its sockets' sessions every 30 s.
+async fn announce_revoked(state: &AppState, user_id: Uuid, session_id: Uuid) {
+    events::publish_best_effort(
+        &mut state.redis.clone(),
+        &events::user_channel(user_id),
+        &Event::SessionRevoked { session_id },
+    )
+    .await;
+}
 
 pub fn me(user: &User) -> Me {
     Me {
@@ -167,7 +179,10 @@ pub async fn logout(
     session: Result<CurrentSession, AppError>,
 ) -> Result<Response, AppError> {
     match session {
-        Ok(session) => session::end(&state, &session).await?,
+        Ok(session) => {
+            session::end(&state, &session).await?;
+            announce_revoked(&state, session.user_id, session.session_id).await;
+        }
         Err(AppError::Unauthorized(_)) => {}
         Err(other) => return Err(other),
     }
@@ -218,6 +233,7 @@ pub async fn revoke_session(
         .await?
         .ok_or(AppError::NotFound)?;
     sessions::delete_live(&mut state.redis.clone(), &hash).await?;
+    announce_revoked(&state, session.user_id, session_id).await;
     if session_id == session.session_id {
         Ok((
             StatusCode::NO_CONTENT,

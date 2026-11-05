@@ -53,6 +53,9 @@ impl Infra {
             Postgres::default()
                 .with_name(format!("{registry}/library/postgres"))
                 .with_tag(POSTGRES_TAG)
+                // Many concurrent test servers, each with its own pool: well
+                // past Postgres's default of 100 connections.
+                .with_cmd(["postgres", "-c", "max_connections=400"])
                 .start(),
             Redis::default()
                 .with_name(format!("{registry}/library/redis"))

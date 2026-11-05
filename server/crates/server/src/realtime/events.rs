@@ -48,6 +48,9 @@ pub enum Event {
     RoomDeleted { room_id: Uuid },
     /// A session ended; close its sockets (user channel).
     SessionRevoked { session_id: Uuid },
+    /// A user's presence changed (presence channel). `frame` is the finished
+    /// `presence` frame, for the sockets watching `user_id`.
+    Presence { user_id: Uuid, frame: String },
 }
 
 impl Event {

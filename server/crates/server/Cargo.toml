@@ -13,6 +13,7 @@ anyhow.workspace = true
 argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
+futures-util.workspace = true
 rand.workspace = true
 redis.workspace = true
 reqwest.workspace = true
@@ -31,6 +32,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

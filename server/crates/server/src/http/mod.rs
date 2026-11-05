@@ -70,6 +70,8 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
 
     let mut app = Router::new()
+        // The upgrade does its own Origin and session checks.
+        .route("/ws", get(crate::realtime::gateway::upgrade))
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .nest("/api", api);

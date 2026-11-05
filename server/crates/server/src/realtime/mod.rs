@@ -2,3 +2,8 @@
 //! fan-out between instances through Redis.
 
 pub mod events;
+pub mod gateway;
+pub mod hub;
+pub mod presence;
+pub mod send;
+pub mod subscriber;

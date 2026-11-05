@@ -33,6 +33,7 @@ use crate::{
     config::Config,
     http::cookies::CookiePolicy,
     ids::IdGenerator,
+    realtime::{hub::Hub, presence, subscriber},
     state::{AppState, Inner},
 };
 
@@ -73,12 +74,25 @@ pub async fn serve(
         background_stopped.clone(),
     ));
 
+    let hub = Arc::new(Hub::default());
+    let (subscriber, subscriber_task) = subscriber::spawn(
+        subscriber::Deps {
+            redis_url: config.redis_url.expose().to_string(),
+            hub: Arc::clone(&hub),
+            pg: stores.pg.clone(),
+            redis: stores.redis.clone(),
+        },
+        background_stopped.clone(),
+    );
+
     let state = AppState::new(Inner {
         config,
         pg: stores.pg,
         redis: stores.redis,
         messages,
         ids,
+        hub,
+        subscriber,
         instance_id,
         http,
         passwords: PasswordHasher::new(MAX_CONCURRENT_HASHES),
@@ -86,6 +100,7 @@ pub async fn serve(
         shutting_down: AtomicBool::new(false),
     });
 
+    let presence_task = tokio::spawn(presence::run_background(state.clone(), background_stopped));
     let app = http::router(state.clone());
     tracing::info!(addr = %listener.local_addr()?, %instance_id, "listening");
     axum::serve(
@@ -97,13 +112,22 @@ pub async fn serve(
         shutdown.await;
         state.shutting_down.store(true, Ordering::Relaxed);
         tracing::info!("shutting down");
+        // Clients reconnect, to another instance behind the load balancer,
+        // and sync. (Phase 4 adds the drain and the `reconnect` frame.)
+        state
+            .hub
+            .close_all((protocol::frames::close::RESTARTING, "server restarting"));
         let _ = stop_background.send(true);
     })
     .await
     .context("server error")?;
 
-    // Let the lease task release its worker ID, but don't hang on it.
-    let _ = tokio::time::timeout(Duration::from_secs(5), lease).await;
+    // Let the background tasks finish (the lease task releases its worker
+    // ID), but don't hang on them.
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = tokio::join!(lease, subscriber_task, presence_task);
+    })
+    .await;
     Ok(())
 }
 

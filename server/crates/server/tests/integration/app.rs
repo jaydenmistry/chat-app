@@ -12,6 +12,8 @@ use crate::infra::{Infra, TEST_ORIGIN};
 
 pub struct TestApp {
     pub addr: SocketAddr,
+    /// Shared by a second instance started with `spawn_peer`.
+    pub database_url: String,
     pub client: reqwest::Client,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<anyhow::Result<()>>>,
@@ -24,7 +26,22 @@ impl TestApp {
 
     /// Starts a server with its own database and a config adjusted by `tweak`.
     pub async fn spawn_with(infra: &Infra, tweak: impl FnOnce(&mut Config)) -> Self {
-        let mut config = infra.config(infra.fresh_database().await);
+        let database_url = infra.fresh_database().await;
+        Self::spawn_on(infra, database_url, tweak).await
+    }
+
+    /// A second instance of the same deployment: same Postgres database (and,
+    /// like every test app, the same Redis and Scylla).
+    pub async fn spawn_peer(&self, infra: &Infra, tweak: impl FnOnce(&mut Config)) -> Self {
+        Self::spawn_on(infra, self.database_url.clone(), tweak).await
+    }
+
+    async fn spawn_on(
+        infra: &Infra,
+        database_url: String,
+        tweak: impl FnOnce(&mut Config),
+    ) -> Self {
+        let mut config = infra.config(database_url.clone());
         tweak(&mut config);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -34,6 +51,7 @@ impl TestApp {
         }));
         let app = Self {
             addr,
+            database_url,
             // No redirects, so tests can inspect them; no cookie store, so
             // tests pass cookies explicitly and can assert on them.
             client: reqwest::Client::builder()

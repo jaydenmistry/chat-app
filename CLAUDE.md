@@ -50,6 +50,10 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
   after changing queries run `cargo sqlx prepare --workspace` with
   `DATABASE_URL=postgres://chat:chat@localhost:5432/chat`.
 - Rust 1.99.1 (pinned in server/rust-toolchain.toml); Node 26 LTS at /opt/node26/bin.
+- Disk allowance is tight: Scylla rejects writes near full disk. Free space with
+  `docker builder prune -af`, `docker volume prune -af`, and removing
+  `server/target/debug/incremental`.
+- Debug integration tests with `RUST_LOG=warn,scylla=error` to see server logs.
 
 ## Status
 

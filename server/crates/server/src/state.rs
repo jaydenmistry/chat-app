@@ -11,7 +11,11 @@ use storage::messages::MessageStore;
 use uuid::Uuid;
 
 use crate::{
-    auth::password::PasswordHasher, config::Config, http::cookies::CookiePolicy, ids::IdGenerator,
+    auth::password::PasswordHasher,
+    config::Config,
+    http::cookies::CookiePolicy,
+    ids::IdGenerator,
+    realtime::{hub::Hub, subscriber::Subscriber},
 };
 
 /// Cloned for every request, so it is a single `Arc`: one atomic increment
@@ -28,6 +32,10 @@ pub struct Inner {
     /// Messages in Scylla; also owns the Scylla session.
     pub messages: MessageStore,
     pub ids: Arc<IdGenerator>,
+    /// This instance's sockets and what each one receives.
+    pub hub: Arc<Hub>,
+    /// Asks the pub/sub task to (un)subscribe.
+    pub subscriber: Subscriber,
     /// Distinguishes this process in worker-ID leases and logs.
     pub instance_id: Uuid,
     pub http: reqwest::Client,

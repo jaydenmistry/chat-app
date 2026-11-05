@@ -20,7 +20,9 @@ mod ids;
 mod infra;
 mod messages;
 mod migrations;
+mod realtime;
 mod rooms;
+mod ws;
 
 use std::{future::Future, pin::Pin, process::ExitCode, sync::Arc, time::Duration};
 
@@ -55,6 +57,18 @@ const TESTS: &[(&str, TestFn)] = tests![
     rooms::deleting_a_room_removes_everyone,
     rooms::one_dm_per_pair,
     rooms::non_members_see_nothing,
+    realtime::upgrade_requires_session_origin_and_version,
+    realtime::messages_cross_instances,
+    realtime::retries_return_the_original_message,
+    realtime::bad_sends_get_error_frames,
+    realtime::removal_stops_delivery_on_every_instance,
+    realtime::joining_routes_the_room_to_open_sockets,
+    realtime::logout_closes_sockets_everywhere,
+    realtime::sync_returns_missed_messages,
+    realtime::resume_survives_clock_skew,
+    realtime::typing_crosses_instances,
+    realtime::presence_crosses_instances,
+    realtime::guest_expiry_ends_the_socket_and_the_messages,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,
@@ -71,6 +85,9 @@ const TESTS: &[(&str, TestFn)] = tests![
 ];
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// How many tests run at once. Each starts one or two servers; this keeps
+/// CPU, memory and database connections bounded on small CI machines.
+const MAX_CONCURRENT: usize = 16;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -100,14 +117,24 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("building the Tokio runtime");
+    // Server logs go to stderr, filtered by RUST_LOG (e.g. RUST_LOG=warn).
+    if std::env::var_os("RUST_LOG").is_some() {
+        server::telemetry::init(server::config::LogFormat::Pretty);
+    }
     let failed = runtime.block_on(async {
         let infra = Arc::new(Infra::start().await);
         println!("running {} integration tests", selected.len());
 
+        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT));
         let mut running = tokio::task::JoinSet::new();
         for &(name, test) in &selected {
             let infra = Arc::clone(&infra);
+            let permits = Arc::clone(&permits);
             running.spawn(async move {
+                let _permit = permits
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore is never closed");
                 let outcome = tokio::time::timeout(TEST_TIMEOUT, tokio::spawn(test(infra))).await;
                 (*name, outcome)
             });
