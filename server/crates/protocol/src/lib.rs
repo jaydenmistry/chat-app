@@ -6,3 +6,6 @@
 //! the committed files differ.
 
 pub mod api;
+pub mod frames;
+pub mod ids;
+pub mod validate;

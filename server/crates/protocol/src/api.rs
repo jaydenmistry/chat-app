@@ -5,6 +5,8 @@ use time::OffsetDateTime;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::ids::MessageId;
+
 /// Stable error codes. Clients branch on the code, never on the message text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +94,171 @@ pub struct SessionInfo {
     pub ip: Option<String>,
     /// True for the session that made this request.
     pub current: bool,
+}
+
+/// A user as other users see them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UserProfile {
+    pub id: Uuid,
+    pub handle: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub is_guest: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RoomKind {
+    /// Anyone can see and join it.
+    Public,
+    /// Invite only.
+    Private,
+    /// A direct conversation between two users.
+    Dm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MemberRole {
+    Owner,
+    Member,
+}
+
+/// A room the caller belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoomInfo {
+    pub id: Uuid,
+    pub kind: RoomKind,
+    /// Null for DMs, which are named after the other person.
+    pub name: Option<String>,
+    pub role: MemberRole,
+    /// For DMs, the other member.
+    pub dm_peer: Option<UserProfile>,
+    #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
+    pub created_at: OffsetDateTime,
+}
+
+/// An entry in the public room directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PublicRoom {
+    pub id: Uuid,
+    pub name: String,
+    #[ts(type = "number")]
+    pub member_count: i64,
+    /// Whether the caller is already a member.
+    pub joined: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateRoomRequest {
+    pub name: String,
+    /// `public` or `private`. DMs are created with [`CreateDmRequest`].
+    pub kind: RoomKind,
+}
+
+/// Opens (or returns the existing) DM with the user who has this handle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateDmRequest {
+    pub handle: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Member {
+    pub user: UserProfile,
+    pub role: MemberRole,
+    #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
+    pub joined_at: OffsetDateTime,
+}
+
+/// An invite link for a private room. The link is `/invite/<code>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Invite {
+    pub code: String,
+    #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
+    pub expires_at: OffsetDateTime,
+    pub max_uses: i32,
+}
+
+/// A chat message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Message {
+    pub id: MessageId,
+    pub room_id: Uuid,
+    pub author_id: Uuid,
+    /// Empty when `deleted` is true.
+    pub content: String,
+    /// The time inside the ID.
+    #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
+    pub edited_at: Option<OffsetDateTime>,
+    pub deleted: bool,
+    /// The write timestamp of the latest change, in microseconds. Of two
+    /// copies of the same message, the one with the higher version is newer.
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// One page of history, newest message first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HistoryPage {
+    pub messages: Vec<Message>,
+    /// Pass as `before` to get the next older page. Null at the start of the
+    /// room. A page can be shorter than requested and still have a cursor,
+    /// when the server stopped early to bound its work.
+    pub next_before: Option<MessageId>,
+}
+
+/// "I have this room up to `after`; send me what I missed."
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SyncCursor {
+    pub room_id: Uuid,
+    /// The highest message ID the client has seen in the room.
+    pub after: MessageId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SyncRequest {
+    pub rooms: Vec<SyncCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoomSync {
+    pub room_id: Uuid,
+    /// False if the caller is no longer a member; the client drops the room.
+    pub member: bool,
+    /// Messages from slightly before `after` onwards, oldest first. The
+    /// overlap is deliberate (docs/design.md 16.1); the client deduplicates by
+    /// ID.
+    pub messages: Vec<Message>,
+    /// False if there were more messages than one sync returns. The client
+    /// then reloads the room from its latest page instead of patching.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SyncResponse {
+    pub rooms: Vec<RoomSync>,
 }
 
 #[cfg(test)]
