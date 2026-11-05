@@ -89,9 +89,10 @@ const TESTS: &[(&str, TestFn)] = tests![
 ];
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
-/// How many tests run at once. Each starts one or two servers; this keeps
-/// CPU, memory and database connections bounded on small CI machines.
-const MAX_CONCURRENT: usize = 16;
+/// How many tests run at once (`TEST_CONCURRENCY` overrides). Each starts
+/// one or two servers against shared containers; the bound keeps CPU, memory
+/// and connections well inside what a 4-core CI machine handles.
+const DEFAULT_CONCURRENCY: usize = 8;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -129,7 +130,11 @@ fn main() -> ExitCode {
         let infra = Arc::new(Infra::start().await);
         println!("running {} integration tests", selected.len());
 
-        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT));
+        let concurrency = std::env::var("TEST_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CONCURRENCY);
+        let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let mut running = tokio::task::JoinSet::new();
         for &(name, test) in &selected {
             let infra = Arc::clone(&infra);
