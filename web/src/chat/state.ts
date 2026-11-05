@@ -76,6 +76,10 @@ export interface ChatState {
   reactionClock: Record<string, string>;
   /** In DMs: how far the other person has read. */
   peerRead: Record<string, string>;
+  /** Counts `roomJoined` actions, so a stale room list can't undo a join. */
+  joinSeq: number;
+  /** room -> the `joinSeq` it was joined at. */
+  joinedAt: Record<string, number>;
 }
 
 export function initialState(me = ""): ChatState {
@@ -94,12 +98,18 @@ export function initialState(me = ""): ChatState {
     early: [],
     reactionClock: {},
     peerRead: {},
+    joinSeq: 0,
+    joinedAt: {},
   };
 }
 
 export type Action =
   | { type: "connection"; state: ConnectionState }
-  | { type: "rooms"; rooms: RoomInfo[] }
+  /**
+   * The full room list. `since` is the `joinSeq` when the request started:
+   * rooms joined after that may be missing from it and are kept.
+   */
+  | { type: "rooms"; rooms: RoomInfo[]; since?: number }
   | { type: "roomJoined"; room: RoomInfo; select?: boolean }
   | { type: "roomLeft"; roomId: string; notice?: string }
   | { type: "select"; roomId: string }
@@ -240,7 +250,10 @@ export function reducer(state: ChatState, action: Action): ChatState {
     case "connection":
       return { ...state, connection: action.state };
     case "rooms": {
-      const rooms = sortRooms(action.rooms);
+      const listed = new Set(action.rooms.map((r) => r.id));
+      const since = action.since ?? state.joinSeq;
+      const newer = state.rooms.filter((r) => !listed.has(r.id) && (state.joinedAt[r.id] ?? -1) > since);
+      const rooms = sortRooms([...action.rooms, ...newer]);
       const ids = new Set(rooms.map((r) => r.id));
       const activeRoomId = state.activeRoomId && ids.has(state.activeRoomId) ? state.activeRoomId : (rooms[0]?.id ?? null);
       // Drop data for rooms we're no longer in.
@@ -249,9 +262,12 @@ export function reducer(state: ChatState, action: Action): ChatState {
     }
     case "roomJoined": {
       const rooms = sortRooms([...state.rooms.filter((r) => r.id !== action.room.id), action.room]);
+      const joinSeq = state.joinSeq + 1;
       return {
         ...state,
         rooms,
+        joinSeq,
+        joinedAt: { ...state.joinedAt, [action.room.id]: joinSeq },
         activeRoomId: action.select || !state.activeRoomId ? action.room.id : state.activeRoomId,
       };
     }

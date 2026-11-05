@@ -66,8 +66,9 @@ export function useChat(me: Me, onSessionEnded: () => void) {
   }, []);
 
   const loadRooms = useCallback(async () => {
+    const since = stateRef.current.joinSeq;
     const rooms = await api.rooms();
-    dispatch({ type: "rooms", rooms });
+    dispatch({ type: "rooms", rooms, since });
     const peers = rooms.flatMap((r) => (r.dm_peer ? [r.dm_peer] : []));
     dispatch({ type: "profiles", profiles: [...peers, { id: me.id, handle: me.handle, display_name: me.display_name, avatar_url: me.avatar_url, is_guest: me.is_guest }] });
   }, [me]);

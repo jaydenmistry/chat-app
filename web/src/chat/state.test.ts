@@ -84,6 +84,19 @@ function change(c: Extract<Action, { type: "change" }>["change"], now = 1000): A
 const reaction = (messageId: string, emoji: string, count: number, userId: string, active: boolean, changeId: string) =>
   change({ kind: "reaction", messageId, emoji, count, userId, active, changeId });
 
+describe("room list", () => {
+  it("a stale list doesn't undo a join made while it was loading", () => {
+    const since = withRooms.joinSeq;
+    let s = reducer(withRooms, { type: "roomJoined", room: room("r3", "gamma"), select: true });
+    s = reducer(s, { type: "rooms", rooms: [room("r1", "alpha"), room("r2", "beta")], since });
+    expect(s.rooms.map((r) => r.id)).toEqual(["r1", "r2", "r3"]);
+    expect(s.activeRoomId).toBe("r3");
+    // A list requested after the join is the truth: r3 is gone.
+    s = reducer(s, { type: "rooms", rooms: [room("r1", "alpha")], since: s.joinSeq });
+    expect(s.rooms.map((r) => r.id)).toEqual(["r1"]);
+  });
+});
+
 describe("edits and deletes", () => {
   const loaded = reducer(withRooms, page([msg("5")], "100"));
 

@@ -17,7 +17,9 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const [dialog, setDialog] = useState<Dialog>("none");
   const [showAccount, setShowAccount] = useState(false);
   const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState<string | null>(null);
+  // Each submit is a new search, even of the same words: the index may
+  // have caught up since.
+  const [searching, setSearching] = useState<{ query: string; n: number } | null>(null);
 
   if (showAccount) {
     return (
@@ -47,7 +49,7 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
           role="search"
           onSubmit={(e) => {
             e.preventDefault();
-            if (query.trim() !== "") setSearching(query.trim());
+            if (query.trim() !== "") setSearching((prev) => ({ query: query.trim(), n: (prev?.n ?? 0) + 1 }));
           }}
         >
           <input
@@ -125,8 +127,8 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
         )}
         {searching ? (
           <SearchPanel
-            key={searching}
-            query={searching}
+            key={`${searching.n}:${searching.query}`}
+            query={searching.query}
             state={state}
             actions={actions}
             onOpen={(roomId) => {
