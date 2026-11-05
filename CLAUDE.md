@@ -54,6 +54,8 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
   `docker builder prune -af`, `docker volume prune -af`, and removing
   `server/target/debug/incremental`.
 - Debug integration tests with `RUST_LOG=warn,scylla=error` to see server logs.
+- If dockerd won't start ("process with PID N is still running") after a worker
+  restart, the pid file is stale: `rm -f /var/run/docker.pid`, start dockerd again.
 - After a new session (dockerd restart) `chat-dev-pg` can lose its port mapping:
   `docker rm -f chat-dev-pg`, rerun it, then `sqlx migrate run --source migrations/postgres`.
 - The compose stack's Postgres and `chat-dev-pg` both bind :5432; stop one.
@@ -73,7 +75,51 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 - Phase 1: approved 2026-11-05.
 - Phase 2: approved 2026-11-05 (with: add member.joined/member.left frames in
   Phase 3).
-- Phase 3: in progress.
+- Phase 3: complete 2026-11-05, summary given, **awaiting owner approval**.
+  CI run 16 green on `93c5db1`. Do not start Phase 4 until approved.
 - (Phase 1 notes:) Dokploy compose and deploy guide
   deferred to Phase 4. Rate limits on sign-up/login are Phase 4: don't expose
   the demo publicly before then.
+
+## Handoff (state at end of Phase 3)
+
+How the owner works: makes design decisions, reviews every line, usually
+answers "continue with recommendations". Phase summaries must cover: what was
+built, decisions and why, Rust/DB concepts (2–3 sentences each, on first use),
+test coverage, uncertainties, open questions. Then stop and wait.
+
+Phase 3 built: edits/deletes/reactions over WS (`realtime/mutate.rs`), the
+`room_changes` feed in sync incl. late-insert rows (`realtime/send.rs`), read
+marks, unread counts (cap 99+), receipts (DM live "Seen", group "Seen by N"
+on demand), member.joined/left frames, search (XADD inside the send Lua
+script, indexer consumer group in `server/src/search.rs`, `GET /api/search`
+hydrated from Scylla), and the client for all of it. Details:
+`docs/design.md` §19, `docs/protocol.md`, `docs/testing.md`.
+
+Open questions put to the owner (answers pending):
+1. Public directory lists only the top 100 rooms by members; add directory
+   search in Phase 4?
+2. Group "Seen by N" refreshes only on room open / hover (never pushed): OK?
+3. Phase 4 order: rate limits and caps first (needed before public demo),
+   then Dokploy files, metrics, k6?
+
+Known uncertainties (unmeasured, don't put numbers in docs):
+- Search speed for very common words over a large index.
+- Reaction counts are read right after each write; concurrent toggles can
+  show a briefly stale count until the next sync.
+- After another tab's read mark, unread is recounted from loaded messages
+  only (approximate until the next room-list load).
+- WebKit e2e "messages sent while offline" failed once (run 12), passed in
+  13, 14, 16. Cause unknown.
+
+Phase 4 scope (design §19 table): rate limits (send script, edits,
+reactions, sign-up/login, connections), room/membership caps, guest cleanup
+job + `user.expired`, demo rooms and 24 h reset, admin CLI, graceful drain +
+`reconnect` frame, metrics incl. `index_lag_seconds`, `server reindex --room`,
+reclaiming Scylla space of deleted rooms, Dokploy compose + deploy guide, k6
+load tests (measured numbers only), and the open verification items in §18.
+
+Planted-bug practice: apply a plant, run the one test, restore the file by
+rewriting its contents (never move a backup back: the old mtime stops cargo
+from rebuilding). Record every plant in `docs/testing.md`.
+
