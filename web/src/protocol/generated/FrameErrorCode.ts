@@ -3,4 +3,4 @@
 /**
  * Stable error codes for `error` frames.
  */
-export type FrameErrorCode = "bad_frame" | "invalid_content" | "forbidden" | "idempotency_conflict" | "unavailable" | "internal";
+export type FrameErrorCode = "bad_frame" | "invalid_content" | "forbidden" | "not_found" | "invalid_reaction" | "idempotency_conflict" | "unavailable" | "internal";

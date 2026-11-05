@@ -45,7 +45,7 @@ use crate::{
     realtime::{
         events::{self, Event},
         hub::{CloseReason, ConnHandle, encode},
-        presence,
+        mutate, presence,
         send::{self, Sender},
     },
     state::AppState,
@@ -273,25 +273,55 @@ async fn read_loop(
                 idempotency_key,
                 content,
             } => {
-                if req_id.len() > MAX_REQ_ID {
-                    reply(
-                        outbound,
-                        &ServerFrame::Error {
-                            req_id: None,
-                            code: FrameErrorCode::BadFrame,
-                            message: "req_id is too long".into(),
-                        },
-                    );
+                if !req_id_ok(outbound, &req_id) {
                     continue;
                 }
                 let outcome =
                     send::send(&sender, &req_id, room_id, idempotency_key, &content).await;
-                // The ack goes into this socket's queue before the publish,
-                // so it always arrives before the fan-out copy.
-                reply(outbound, &outcome.reply);
-                if let Some(publish) = outcome.publish {
-                    publish.run(state).await;
+                finish(state, outbound, outcome).await;
+            }
+            ClientFrame::MessageEdit {
+                req_id,
+                room_id,
+                message_id,
+                content,
+            } => {
+                if !req_id_ok(outbound, &req_id) {
+                    continue;
                 }
+                let outcome = mutate::edit(&sender, &req_id, room_id, message_id, &content).await;
+                finish(state, outbound, outcome).await;
+            }
+            ClientFrame::MessageDelete {
+                req_id,
+                room_id,
+                message_id,
+            } => {
+                if !req_id_ok(outbound, &req_id) {
+                    continue;
+                }
+                let outcome = mutate::delete(&sender, &req_id, room_id, message_id).await;
+                finish(state, outbound, outcome).await;
+            }
+            ClientFrame::ReactionSet {
+                req_id,
+                room_id,
+                message_id,
+                emoji,
+                active,
+            } => {
+                if !req_id_ok(outbound, &req_id) {
+                    continue;
+                }
+                let outcome =
+                    mutate::react(&sender, &req_id, room_id, message_id, &emoji, active).await;
+                finish(state, outbound, outcome).await;
+            }
+            ClientFrame::ReadMark {
+                room_id,
+                message_id,
+            } => {
+                mutate::mark_read(state, ctx.user_id, room_id, message_id).await;
             }
             ClientFrame::Typing { room_id } => {
                 let now = Instant::now();
@@ -313,6 +343,31 @@ async fn read_loop(
                 presence::send_current(state, outbound, &watched).await;
             }
         }
+    }
+}
+
+/// Request IDs are echoed back, so their size is bounded.
+fn req_id_ok(outbound: &mpsc::Sender<Utf8Bytes>, req_id: &str) -> bool {
+    if req_id.len() <= MAX_REQ_ID {
+        return true;
+    }
+    reply(
+        outbound,
+        &ServerFrame::Error {
+            req_id: None,
+            code: FrameErrorCode::BadFrame,
+            message: "req_id is too long".into(),
+        },
+    );
+    false
+}
+
+/// The reply goes into this socket's queue before the publish, so the
+/// requester always sees its ack or `ok` before the fan-out copy.
+async fn finish(state: &AppState, outbound: &mpsc::Sender<Utf8Bytes>, outcome: send::Outcome) {
+    reply(outbound, &outcome.reply);
+    if let Some(publish) = outcome.publish {
+        publish.run(state).await;
     }
 }
 

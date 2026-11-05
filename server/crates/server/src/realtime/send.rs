@@ -22,13 +22,13 @@ use protocol::{
     validate,
 };
 use redis::Script;
-use storage::messages::NewMessage;
+use storage::messages::{ChangeKind, NewMessage};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     auth::token,
-    http::messages::to_api,
+    http::messages::{RESUME_OVERLAP_MS, to_api},
     realtime::events::{self, Event},
     state::AppState,
 };
@@ -46,8 +46,8 @@ const PUBLISH_ATTEMPTS: u32 = 5;
 /// KEYS[1] = idem:<user>:<key>; ARGV = new value, TTL in seconds. Returns
 /// nil if the key was new (and is now ours), else the stored value. One
 /// script, so check-and-set can't interleave with a concurrent attempt.
-/// Phase 4 adds the rate limit and Phase 3 the search-stream entry here, so
-/// all three stay atomic.
+/// Phase 4 adds the rate limit and the search-stream entry goes here too,
+/// so all three stay atomic.
 static CLAIM_KEY: LazyLock<Script> = LazyLock::new(|| {
     Script::new(
         r"
@@ -109,7 +109,7 @@ impl Publish {
     }
 }
 
-fn error(req_id: &str, code: FrameErrorCode, message: impl Into<String>) -> Outcome {
+pub(crate) fn error(req_id: &str, code: FrameErrorCode, message: impl Into<String>) -> Outcome {
     Outcome {
         reply: ServerFrame::Error {
             req_id: Some(req_id.to_string()),
@@ -121,12 +121,13 @@ fn error(req_id: &str, code: FrameErrorCode, message: impl Into<String>) -> Outc
 }
 
 /// `<message id>:<room id>:<fingerprint>`, stored under the idempotency key.
-fn claim_value(id: MessageId, room_id: Uuid, fingerprint: &str) -> String {
+/// Public so tests can stage a claim whose write never happened.
+pub fn claim_value(id: MessageId, room_id: Uuid, fingerprint: &str) -> String {
     format!("{id}:{room_id}:{fingerprint}")
 }
 
 /// What a reused key must match: the same room and the same content.
-fn fingerprint(room_id: Uuid, content: &str) -> String {
+pub fn fingerprint(room_id: Uuid, content: &str) -> String {
     let mut input = room_id.as_bytes().to_vec();
     input.extend_from_slice(content.as_bytes());
     token::sha256(&input)[..16]
@@ -261,6 +262,28 @@ pub async fn send(
         }
     }
 
+    // An ack this long after the ID was assigned (a retry of a slow first
+    // attempt) may be behind the resume window of a client that was away:
+    // the change feed tells it (docs/design.md 16.1). Before the ack, so a
+    // failure here is retried with the rest.
+    if id.ms_since_epoch() + RESUME_OVERLAP_MS / 2 < state.ids.now_ms() {
+        let recorded = match state.ids.next_id() {
+            Ok(change_id) => tokio::time::timeout(
+                WRITE_TIMEOUT,
+                state
+                    .messages
+                    .record_change(room_id, change_id, id, ChangeKind::LateInsert, ttl),
+            )
+            .await
+            .is_ok_and(|r| r.is_ok()),
+            Err(_) => false,
+        };
+        if !recorded {
+            tracing::warn!(%id, "recording a late insert failed");
+            return error(req_id, FrameErrorCode::Unavailable, "try again");
+        }
+    }
+
     let message: Message = to_api(
         room_id,
         storage::messages::StoredMessage {
@@ -271,6 +294,9 @@ pub async fn send(
             deleted: false,
             version: id.write_timestamp_us(),
         },
+        // A duplicate may have reactions by now; clients keep the ones they
+        // have when the version is unchanged, and sync brings the rest.
+        Vec::new(),
     );
     let created = ServerFrame::MessageCreated {
         message: message.clone(),

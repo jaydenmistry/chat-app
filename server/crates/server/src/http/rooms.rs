@@ -18,11 +18,13 @@ use protocol::{
         CreateDmRequest, CreateRoomRequest, Invite, Member, PublicRoom, RoomInfo, RoomKind,
         UserProfile,
     },
-    frames::LeaveReason,
+    frames::{LeaveReason, ServerFrame},
+    ids::MessageId,
     validate,
 };
 use serde::Deserialize;
 use storage::{
+    messages::count_unread,
     rooms::{self, InviteOutcome, UserRoom},
     users::{self, User},
 };
@@ -31,7 +33,10 @@ use uuid::Uuid;
 
 use crate::{
     auth::{session::CurrentSession, token},
-    http::error::{ApiJson, AppError},
+    http::{
+        error::{ApiJson, AppError},
+        messages::floor,
+    },
     permissions::{self, Action, Denied},
     realtime::events::{self, Event},
     state::AppState,
@@ -66,9 +71,53 @@ pub async fn caller(state: &AppState, session: &CurrentSession) -> Result<User, 
         .ok_or(AppError::Unauthorized("sign in required"))
 }
 
-/// Turns rooms into API objects, fetching every DM peer's profile in one
-/// query.
-async fn room_infos(state: &AppState, rooms: Vec<UserRoom>) -> Result<Vec<RoomInfo>, AppError> {
+pub fn profile_of_member(r: &rooms::MemberRow) -> UserProfile {
+    UserProfile {
+        id: r.user_id,
+        handle: r.handle.clone(),
+        display_name: r.display_name.clone(),
+        avatar_url: r.avatar_url.clone(),
+        is_guest: r.is_guest,
+    }
+}
+
+fn member_api(r: &rooms::MemberRow) -> Member {
+    Member {
+        user: profile_of_member(r),
+        role: r.role,
+        joined_at: r.joined_at,
+    }
+}
+
+/// Unread count for one room: at most 100 messages read, whatever the
+/// room's size. A storage failure shows as 0 rather than failing the whole
+/// room list.
+async fn unread(state: &AppState, room: &UserRoom, viewer: Uuid) -> (u32, bool) {
+    let after = MessageId::from_i64(room.last_read_id).unwrap_or(MessageId::from_parts(0, 0, 0));
+    match count_unread(
+        &state.messages,
+        room.id,
+        after,
+        floor(room.history_floor),
+        viewer,
+    )
+    .await
+    {
+        Ok(counted) => counted,
+        Err(err) => {
+            tracing::warn!(error = %err, room_id = %room.id, "unread count failed");
+            (0, false)
+        }
+    }
+}
+
+/// Turns rooms into API objects: every DM peer's profile in one query, and
+/// unread counts for all rooms concurrently.
+async fn room_infos(
+    state: &AppState,
+    rooms: Vec<UserRoom>,
+    viewer: Uuid,
+) -> Result<Vec<RoomInfo>, AppError> {
     let peer_ids: Vec<Uuid> = rooms.iter().filter_map(|r| r.dm_peer).collect();
     let peers: HashMap<Uuid, UserProfile> = if peer_ids.is_empty() {
         HashMap::new()
@@ -79,15 +128,22 @@ async fn room_infos(state: &AppState, rooms: Vec<UserRoom>) -> Result<Vec<RoomIn
             .map(|u| (u.id, profile(u)))
             .collect()
     };
+    let counts =
+        futures_util::future::join_all(rooms.iter().map(|r| unread(state, r, viewer))).await;
     Ok(rooms
         .into_iter()
-        .map(|r| RoomInfo {
+        .zip(counts)
+        .map(|(r, (unread, unread_capped))| RoomInfo {
             id: r.id,
             kind: r.kind,
             name: r.name,
             role: r.role,
             dm_peer: r.dm_peer.and_then(|id| peers.get(&id).cloned()),
             created_at: r.created_at,
+            last_read_id: MessageId::from_i64(r.last_read_id)
+                .unwrap_or(MessageId::from_parts(0, 0, 0)),
+            unread,
+            unread_capped,
         })
         .collect())
 }
@@ -100,7 +156,21 @@ async fn room_info_for(
     let room = rooms::room_for_user(&state.pg, room_id, user_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(room_infos(state, vec![room]).await?.remove(0))
+    Ok(room_infos(state, vec![room], user_id).await?.remove(0))
+}
+
+/// Tells the room's other members someone joined.
+async fn announce_member_joined(state: &AppState, room_id: Uuid, user_id: Uuid) {
+    let member = match rooms::member(&state.pg, room_id, user_id).await {
+        Ok(Some(row)) => member_api(&row),
+        _ => return,
+    };
+    events::publish_best_effort(
+        &mut state.redis.clone(),
+        &events::room_channel(room_id),
+        &Event::deliver(&ServerFrame::MemberJoined { room_id, member }),
+    )
+    .await;
 }
 
 /// Tells every socket of `user_id` that they are now in `room`.
@@ -118,7 +188,7 @@ pub async fn list(
     session: CurrentSession,
 ) -> Result<Json<Vec<RoomInfo>>, AppError> {
     let rooms = rooms::rooms_for_user(&state.pg, session.user_id).await?;
-    Ok(Json(room_infos(&state, rooms).await?))
+    Ok(Json(room_infos(&state, rooms, session.user_id).await?))
 }
 
 pub async fn directory(
@@ -151,7 +221,7 @@ pub async fn create(
     let name = validate::room_name(&req.name)
         .map_err(|e| AppError::invalid("name", format!("room name {}", e.message())))?;
     let room = rooms::create_room(&state.pg, req.kind, name, user.id).await?;
-    let info = room_infos(&state, vec![room]).await?.remove(0);
+    let info = room_infos(&state, vec![room], user.id).await?.remove(0);
     announce_joined(&state, user.id, info.clone()).await;
     Ok((StatusCode::CREATED, Json(info)).into_response())
 }
@@ -170,6 +240,7 @@ pub async fn join(
     let info = room_info_for(&state, room_id, session.user_id).await?;
     if added {
         announce_joined(&state, session.user_id, info.clone()).await;
+        announce_member_joined(&state, room_id, session.user_id).await;
     }
     Ok(Json(info))
 }
@@ -190,16 +261,25 @@ pub async fn leave(
 
 /// Published on the room channel, so it is ordered with the room's messages:
 /// every instance stops routing the room to that user at the same point in
-/// the stream (docs/design.md 16.4).
+/// the stream (docs/design.md 16.4). Then the remaining members hear
+/// `member.left`; the user is no longer routed, so they don't.
 async fn member_left(state: &AppState, room_id: Uuid, user_id: Uuid, reason: LeaveReason) {
+    let mut redis = state.redis.clone();
+    let channel = events::room_channel(room_id);
     events::publish_best_effort(
-        &mut state.redis.clone(),
-        &events::room_channel(room_id),
+        &mut redis,
+        &channel,
         &Event::MemberLeft {
             room_id,
             user_id,
             reason,
         },
+    )
+    .await;
+    events::publish_best_effort(
+        &mut redis,
+        &channel,
+        &Event::deliver(&ServerFrame::MemberLeft { room_id, user_id }),
     )
     .await;
 }
@@ -232,21 +312,7 @@ pub async fn members(
     let membership = rooms::membership(&state.pg, room_id, session.user_id).await?;
     permissions::check(Action::Read, membership.as_ref(), false)?;
     let rows = rooms::members(&state.pg, room_id).await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| Member {
-                user: UserProfile {
-                    id: r.user_id,
-                    handle: r.handle,
-                    display_name: r.display_name,
-                    avatar_url: r.avatar_url,
-                    is_guest: r.is_guest,
-                },
-                role: r.role,
-                joined_at: r.joined_at,
-            })
-            .collect(),
-    ))
+    Ok(Json(rows.iter().map(member_api).collect()))
 }
 
 pub async fn remove_member(
@@ -309,6 +375,7 @@ pub async fn accept_invite(
         InviteOutcome::Joined(room_id) => {
             let info = room_info_for(&state, room_id, user.id).await?;
             announce_joined(&state, user.id, info.clone()).await;
+            announce_member_joined(&state, room_id, user.id).await;
             return Ok(Json(info));
         }
         InviteOutcome::AlreadyMember(room_id) => room_id,

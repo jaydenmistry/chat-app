@@ -13,6 +13,7 @@ function msg(id: string, content = `m${id}`, version = 1, deleted = false): Mess
     edited_at: null,
     deleted,
     version,
+    reactions: [],
   };
 }
 

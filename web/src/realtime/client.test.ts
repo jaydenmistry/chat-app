@@ -53,6 +53,7 @@ function message(id: string): Message {
     edited_at: null,
     deleted: false,
     version: 1,
+    reactions: [],
   };
 }
 

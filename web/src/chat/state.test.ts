@@ -5,7 +5,7 @@ import type { RoomInfo } from "../protocol/generated/RoomInfo";
 import { initialState, reducer, syncCursors, TYPING_SHOWN_MS, typers } from "./state";
 
 function room(id: string, name: string): RoomInfo {
-  return { id, kind: "public", name, role: "member", dm_peer: null, created_at: "2026-11-05T00:00:00Z" };
+  return { id, kind: "public", name, role: "member", dm_peer: null, created_at: "2026-11-05T00:00:00Z", last_read_id: "0", unread: 0, unread_capped: false };
 }
 
 function msg(id: string, roomId = "r1", author = "bob"): Message {
@@ -18,6 +18,7 @@ function msg(id: string, roomId = "r1", author = "bob"): Message {
     edited_at: null,
     deleted: false,
     version: 1,
+    reactions: [],
   };
 }
 
@@ -58,14 +59,14 @@ describe("chat state", () => {
   });
 
   it("syncs only loaded rooms, from their newest message", () => {
-    let s = reducer(withRooms, { type: "history", roomId: "r1", page: { messages: [msg("3"), msg("12")], next_before: null }, replace: false });
+    let s = reducer(withRooms, { type: "history", roomId: "r1", page: { messages: [msg("3"), msg("12")], next_before: null, change_cursor: "0" }, replace: false });
     s = reducer(s, { type: "messages", roomId: "r2", messages: [msg("40", "r2")] });
     expect(syncCursors(s)).toEqual([{ room_id: "r1", after: "12" }]);
   });
 
   it("a replacing page drops what it doesn't contain", () => {
-    let s = reducer(withRooms, { type: "history", roomId: "r1", page: { messages: [msg("1"), msg("2")], next_before: null }, replace: false });
-    s = reducer(s, { type: "history", roomId: "r1", page: { messages: [msg("900")], next_before: "899" }, replace: true });
+    let s = reducer(withRooms, { type: "history", roomId: "r1", page: { messages: [msg("1"), msg("2")], next_before: null, change_cursor: "0" }, replace: false });
+    s = reducer(s, { type: "history", roomId: "r1", page: { messages: [msg("900")], next_before: "899", change_cursor: "0" }, replace: true });
     expect(s.messages.r1).toEqual({ items: [msg("900")], olderCursor: "899", loaded: true });
   });
 });

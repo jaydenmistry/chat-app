@@ -11,4 +11,10 @@ export type HistoryPage = { messages: Array<Message>,
  * room. A page can be shorter than requested and still have a cursor,
  * when the server stopped early to bound its work.
  */
-next_before: MessageId | null, };
+next_before: MessageId | null, 
+/**
+ * Where this room's change feed stands now. Keep it, and send it as
+ * `changes_after` in the next sync to get edits, deletes and reactions
+ * to messages you already have.
+ */
+change_cursor: MessageId, };

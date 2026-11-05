@@ -24,7 +24,7 @@ If Docker Hub's anonymous pull limit blocks image pulls, set
 | Layer | Tool | What it covers |
 |---|---|---|
 | Unit (Rust) | `cargo test` | config, validation, tokens and hashing, Argon2 parameters, PKCE (RFC 7636 test vector), cookies, Origin matching, GitHub handles, Scylla migration files, protocol JSON shapes, message IDs and bucket math, the ID generator's clock handling, history pagination against an in-memory store (including 50 randomized layouts), the permission rule table, the socket hub (routing, reference-counted subscriptions, slow consumers) |
-| Integration (Rust) | custom runner in `server/crates/server/tests/integration` | real Postgres 18, Redis 8 and ScyllaDB 2026.3 in containers, with real server instances on random ports. Accounts and sessions; rooms, invites and DMs; the Scylla message store and pagination over real partitions and expired rows; worker-ID leases; and the WebSocket gateway with **two instances**: fan-out, idempotent retries, removal, joins, logout, sync, clock skew, typing, presence, guest expiry |
+| Integration (Rust) | custom runner in `server/crates/server/tests/integration` | real Postgres 18, Redis 8 and ScyllaDB 2026.3 in containers, with real server instances on random ports. Accounts and sessions; rooms, invites and DMs; the Scylla message store and pagination over real partitions and expired rows; worker-ID leases; and the WebSocket gateway with **two instances**: fan-out, idempotent retries, removal, joins, logout, sync, clock skew, typing, presence, guest expiry. Phase 3: edits and deletes (author-only, final, surviving a replayed insert), reactions across instances, the change feed in sync including late inserts, unread counts, read marks and receipts, member frames |
 | Failure (Rust) | same runner | Redis frozen mid-conversation (`docker pause`) with clients on two instances; an instance shut down under its clients. Every acknowledged message must reach every client exactly once |
 | Unit (web) | Vitest + Testing Library | API client error handling, sign-in form error display, session labels |
 | End to end | Playwright (Chromium, Firefox, WebKit) | the full compose stack (Vite, Traefik, two server instances): guest sign-in, account creation, sign-in with a wrong and a right password, a taken handle, revoking another device's session |
@@ -78,3 +78,15 @@ Not covered by an integration test: a slow consumer being disconnected.
 TCP buffers absorb far more than the 256-frame queue before the server's
 writer blocks, so a test would need megabytes of traffic. The hub's unit test
 `a_full_queue_closes_that_connection_only` covers the decision itself.
+
+### Phase 3
+
+| Date | Bug class | Planted change | Test | Result |
+|---|---|---|---|---|
+| 2026-11-05 | Lost edit | the insert is written at the server's current time instead of the ID's timestamp | `features::edit_survives_a_replayed_insert` | failed: "the replay overwrote the edit" |
+| 2026-11-05 | Missed change on resume | edits, deletes and reactions don't write the `room_changes` row | `features::sync_returns_changes_to_loaded_messages` | failed: the edited message missing from `changed` |
+| 2026-11-05 | Gap (late insert) | an ack long after the ID was assigned writes no late-insert row | `features::late_inserts_reach_sync_through_the_change_feed` | failed: "late insert missing from sync" |
+| 2026-11-05 | Permission (author) | edit and delete skip the author check | `features::edits_and_deletes_reach_everyone` | failed: another member's edit was accepted, expected `forbidden` |
+| 2026-11-05 | Read state regression | `read.mark` drops `last_read_id < $3`, so marks can move backwards | `features::read_marks_unread_counts_and_receipts` | failed: a backwards mark produced a `read.updated` |
+| 2026-11-05 | Wrong counts | a reaction's count includes removed (`active = false`) rows | `features::reactions_count_once_per_user` | failed: timed out waiting for the count to drop |
+| 2026-11-05 | Read receipts leak | group-room reads are published to the whole room | `features::read_marks_unread_counts_and_receipts` | failed: another member received `read.updated` |

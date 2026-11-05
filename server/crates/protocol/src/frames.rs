@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::api::{Message, RoomInfo};
+use crate::{
+    api::{Member, Message, RoomInfo},
+    ids::MessageId,
+};
 
 pub const SUBPROTOCOL: &str = "chat.v1";
 /// The largest frame the server accepts. Message content is at most 4096
@@ -46,6 +49,38 @@ pub enum ClientFrame {
     /// The answer to `ping`.
     #[serde(rename = "pong")]
     Pong,
+    /// Replace the content of your own message. Answered with `ok`.
+    #[serde(rename = "message.edit")]
+    MessageEdit {
+        req_id: String,
+        room_id: Uuid,
+        message_id: MessageId,
+        content: String,
+    },
+    /// Delete your own message. Answered with `ok`.
+    #[serde(rename = "message.delete")]
+    MessageDelete {
+        req_id: String,
+        room_id: Uuid,
+        message_id: MessageId,
+    },
+    /// Add (`active: true`) or remove your reaction. Answered with `ok`.
+    /// Setting what is already set is a no-op, so retries are safe.
+    #[serde(rename = "reaction.set")]
+    ReactionSet {
+        req_id: String,
+        room_id: Uuid,
+        message_id: MessageId,
+        emoji: String,
+        active: bool,
+    },
+    /// "I have read up to this message." Send when the room is visible and
+    /// scrolled to the bottom, at most every 2 seconds per room. No reply.
+    #[serde(rename = "read.mark")]
+    ReadMark {
+        room_id: Uuid,
+        message_id: MessageId,
+    },
 }
 
 /// Frames the server sends.
@@ -79,8 +114,61 @@ pub enum ServerFrame {
         code: FrameErrorCode,
         message: String,
     },
+    /// An edit, delete or reaction was stored.
+    #[serde(rename = "ok")]
+    Ok { req_id: String },
     #[serde(rename = "message.created")]
     MessageCreated { message: Message },
+    /// A message's content changed. Apply it only if `version` is higher than
+    /// the copy you have.
+    #[serde(rename = "message.updated")]
+    MessageUpdated {
+        room_id: Uuid,
+        message_id: MessageId,
+        content: String,
+        #[serde(with = "time::serde::rfc3339")]
+        #[ts(type = "string")]
+        edited_at: time::OffsetDateTime,
+        #[ts(type = "number")]
+        version: i64,
+        change_id: MessageId,
+    },
+    /// A message was deleted. Final: no later frame brings its content back.
+    #[serde(rename = "message.deleted")]
+    MessageDeleted {
+        room_id: Uuid,
+        message_id: MessageId,
+        #[ts(type = "number")]
+        version: i64,
+        change_id: MessageId,
+    },
+    /// Someone added or removed a reaction. `count` is the total for that
+    /// emoji after the change. Of two of these for the same message, the
+    /// higher `change_id` is newer.
+    #[serde(rename = "reaction.updated")]
+    ReactionUpdated {
+        room_id: Uuid,
+        message_id: MessageId,
+        emoji: String,
+        count: u32,
+        user_id: Uuid,
+        active: bool,
+        change_id: MessageId,
+    },
+    /// A read position moved forward: the other person's in a DM (a read
+    /// receipt), or your own from another tab (clear the unread badge).
+    #[serde(rename = "read.updated")]
+    ReadUpdated {
+        room_id: Uuid,
+        user_id: Uuid,
+        message_id: MessageId,
+    },
+    /// Someone joined a room you are in.
+    #[serde(rename = "member.joined")]
+    MemberJoined { room_id: Uuid, member: Member },
+    /// Someone left or was removed from a room you are in.
+    #[serde(rename = "member.left")]
+    MemberLeft { room_id: Uuid, user_id: Uuid },
     #[serde(rename = "typing")]
     Typing { room_id: Uuid, user_id: Uuid },
     #[serde(rename = "presence")]
@@ -109,8 +197,12 @@ pub enum FrameErrorCode {
     BadFrame,
     /// Empty, too long, or contains disallowed characters. Not retryable.
     InvalidContent,
-    /// Not a member of the room. Not retryable.
+    /// Not a member of the room, or not your message. Not retryable.
     Forbidden,
+    /// The message doesn't exist (or is already deleted). Not retryable.
+    NotFound,
+    /// Not one of the allowed reaction emoji. Not retryable.
+    InvalidReaction,
     /// The idempotency key was already used for a different message.
     IdempotencyConflict,
     /// A dependency is down. Retry the same frame, with the same key.
@@ -240,6 +332,7 @@ mod tests {
             edited_at: None,
             deleted: false,
             version: 1_767_225_601_000_000,
+            reactions: vec![],
         };
         assert_eq!(
             serde_json::to_value(ServerFrame::MessageAck {
@@ -261,6 +354,7 @@ mod tests {
                     "edited_at": null,
                     "deleted": false,
                     "version": 1_767_225_601_000_000_i64,
+                    "reactions": [],
                 },
             })
         );

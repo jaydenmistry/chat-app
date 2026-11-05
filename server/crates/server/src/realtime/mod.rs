@@ -4,6 +4,7 @@
 pub mod events;
 pub mod gateway;
 pub mod hub;
+pub mod mutate;
 pub mod presence;
 pub mod send;
 pub mod subscriber;

@@ -8,4 +8,9 @@ export type SyncCursor = { room_id: string,
 /**
  * The highest message ID the client has seen in the room.
  */
-after: MessageId, };
+after: MessageId, 
+/**
+ * The room's change cursor from the last history load or sync. Without
+ * it, the sync returns new messages only.
+ */
+changes_after?: MessageId, };

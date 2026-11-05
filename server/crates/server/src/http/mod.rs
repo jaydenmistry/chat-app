@@ -56,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/rooms/{id}/invites", post(rooms::create_invite))
         .route("/rooms/{id}/messages", get(messages::history))
+        .route("/rooms/{id}/receipts", get(messages::receipts))
         .route("/invites/{code}/accept", post(rooms::accept_invite))
         .route("/dms", post(rooms::open_dm))
         .route("/users", get(rooms::profiles))

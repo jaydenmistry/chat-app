@@ -223,6 +223,22 @@ impl Client {
         .await
     }
 
+    /// Sends a request built around a fresh `req_id` and returns the reply
+    /// to it: `ok` or an error.
+    pub async fn request(&mut self, frame: impl FnOnce(String) -> ClientFrame) -> ServerFrame {
+        self.next_req += 1;
+        let req_id = format!("r{}", self.next_req);
+        self.send(&frame(req_id.clone())).await;
+        self.expect("the reply", |f| match f {
+            ServerFrame::Ok { req_id: r } => *r == req_id,
+            ServerFrame::Error {
+                req_id: Some(r), ..
+            } => *r == req_id,
+            _ => false,
+        })
+        .await
+    }
+
     /// Waits for the server to close the connection; returns the close code.
     pub async fn closed(&mut self) -> Option<u16> {
         let deadline = tokio::time::Instant::now() + WAIT;

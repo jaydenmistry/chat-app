@@ -141,6 +141,12 @@ pub struct RoomInfo {
     #[serde(with = "time::serde::rfc3339")]
     #[ts(type = "string")]
     pub created_at: OffsetDateTime,
+    /// The newest message the caller has read ("0" for none).
+    pub last_read_id: MessageId,
+    /// Messages from others since `last_read_id`, counted up to a cap.
+    pub unread: u32,
+    /// True when there are more than `unread` (shown as "99+").
+    pub unread_capped: bool,
 }
 
 /// An entry in the public room directory.
@@ -212,6 +218,18 @@ pub struct Message {
     /// copies of the same message, the one with the higher version is newer.
     #[ts(type = "number")]
     pub version: i64,
+    /// Reactions, one entry per emoji with at least one reaction.
+    #[serde(default)]
+    pub reactions: Vec<ReactionCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReactionCount {
+    pub emoji: String,
+    pub count: u32,
+    /// Whether the caller is one of them.
+    pub me: bool,
 }
 
 /// One page of history, newest message first.
@@ -223,6 +241,10 @@ pub struct HistoryPage {
     /// room. A page can be shorter than requested and still have a cursor,
     /// when the server stopped early to bound its work.
     pub next_before: Option<MessageId>,
+    /// Where this room's change feed stands now. Keep it, and send it as
+    /// `changes_after` in the next sync to get edits, deletes and reactions
+    /// to messages you already have.
+    pub change_cursor: MessageId,
 }
 
 /// "I have this room up to `after`; send me what I missed."
@@ -232,6 +254,11 @@ pub struct SyncCursor {
     pub room_id: Uuid,
     /// The highest message ID the client has seen in the room.
     pub after: MessageId,
+    /// The room's change cursor from the last history load or sync. Without
+    /// it, the sync returns new messages only.
+    #[serde(default)]
+    #[ts(optional)]
+    pub changes_after: Option<MessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -250,8 +277,14 @@ pub struct RoomSync {
     /// overlap is deliberate (docs/design.md 16.1); the client deduplicates by
     /// ID.
     pub messages: Vec<Message>,
-    /// False if there were more messages than one sync returns. The client
-    /// then reloads the room from its latest page instead of patching.
+    /// Messages already sent before `after` that were edited, deleted or
+    /// reacted to since `changes_after`: their current state.
+    pub changed: Vec<Message>,
+    /// The cursor to send as `changes_after` next time.
+    pub change_cursor: MessageId,
+    /// False if there were more messages than one sync returns, or the
+    /// change cursor is older than the 7-day change feed. The client then
+    /// reloads the room from its latest page instead of patching.
     pub complete: bool,
 }
 
@@ -259,6 +292,26 @@ pub struct RoomSync {
 #[ts(export)]
 pub struct SyncResponse {
     pub rooms: Vec<RoomSync>,
+}
+
+/// Who has read up to a message ("Seen by N").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Receipts {
+    /// Members other than the caller whose read position is at or after the
+    /// message.
+    pub count: u32,
+    /// The first 20 of them, most recent reader first.
+    pub readers: Vec<UserProfile>,
+}
+
+/// Search results, newest first, from rooms the caller belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchResults {
+    pub messages: Vec<Message>,
+    /// Pass as `before` for older results. Null when there are no more.
+    pub next_before: Option<MessageId>,
 }
 
 #[cfg(test)]
