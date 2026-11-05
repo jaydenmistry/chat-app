@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE memberships SET last_read_id = $3\n        WHERE room_id = $1 AND user_id = $2 AND last_read_id < $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cbd989b2a27fe38eced20334d33f3f11d9c881bfbfef1ffd4ef929e71d1e8b39"
+}

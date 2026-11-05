@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT r.id, r.kind, r.name, r.created_at, m.role,\n               (SELECT other.user_id FROM memberships other\n                WHERE other.room_id = r.id AND other.user_id <> $1 AND r.kind = 'dm'\n                LIMIT 1) AS dm_peer\n        FROM memberships m JOIN rooms r ON r.id = m.room_id\n        WHERE m.user_id = $1\n        ORDER BY r.created_at\n        ",
+  "query": "\n        SELECT r.id, r.kind, r.name, r.created_at, m.role, m.last_read_id, r.history_floor,\n               (SELECT other.user_id FROM memberships other\n                WHERE other.room_id = r.id AND other.user_id <> $2 AND r.kind = 'dm'\n                LIMIT 1) AS dm_peer\n        FROM memberships m JOIN rooms r ON r.id = m.room_id\n        WHERE m.room_id = $1 AND m.user_id = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,28 @@
       },
       {
         "ordinal": 5,
+        "name": "last_read_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "memberships",
+            "name": "last_read_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "history_floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "history_floor"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "dm_peer",
         "type_info": "Uuid",
         "origin": "Expression"
@@ -67,6 +89,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -76,8 +99,10 @@
       true,
       false,
       false,
+      false,
+      false,
       null
     ]
   },
-  "hash": "92dfd82775939c6c826bc3d3d6b886c3b35ff17efc342cbcaae722eb29196ef1"
+  "hash": "a34cd74ad3b6f1882877cc5dd9e67a0e709e894cb863bbb97c4acb81c1ac491a"
 }

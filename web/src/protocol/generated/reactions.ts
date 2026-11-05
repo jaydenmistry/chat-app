@@ -1,0 +1,28 @@
+// Generated from server/crates/protocol/src/reactions.rs. Do not edit.
+
+export const REACTIONS = [
+  "👍",
+  "👎",
+  "😂",
+  "❤️",
+  "🎉",
+  "😮",
+  "😢",
+  "😡",
+  "🙏",
+  "👀",
+  "🔥",
+  "✅",
+  "❌",
+  "💯",
+  "🚀",
+  "🤔",
+  "👏",
+  "😅",
+  "🙌",
+  "💡",
+  "⭐",
+  "🤝",
+  "😍",
+  "🫡",
+] as const;

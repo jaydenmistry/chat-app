@@ -13,5 +13,6 @@ pub mod postgres;
 pub mod redisdb;
 pub mod rooms;
 pub mod scylladb;
+pub mod search;
 pub mod sessions;
 pub mod users;

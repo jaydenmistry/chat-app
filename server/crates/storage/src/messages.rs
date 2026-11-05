@@ -240,11 +240,20 @@ pub struct MessageStore {
     insert_bucket: PreparedStatement,
     insert_message: PreparedStatement,
     get_message: PreparedStatement,
+    get_with_ttl: PreparedStatement,
     newest_in_bucket: PreparedStatement,
     buckets_below_all: PreparedStatement,
     buckets_below: PreparedStatement,
     oldest_in_bucket: PreparedStatement,
     buckets_from: PreparedStatement,
+    edit_message: PreparedStatement,
+    delete_message: PreparedStatement,
+    get_many: PreparedStatement,
+    insert_change: PreparedStatement,
+    changes_in_day: PreparedStatement,
+    set_reaction: PreparedStatement,
+    reactions_in_range: PreparedStatement,
+    reactions_for_emoji: PreparedStatement,
     /// `(room, bucket)` pairs this process has already written to
     /// `room_buckets`, so each is written about once per room per hour.
     recorded_buckets: Mutex<HashSet<(Uuid, i32)>>,
@@ -298,6 +307,13 @@ impl MessageStore {
                 "SELECT {MESSAGE_COLUMNS} FROM messages WHERE room_id = ? AND bucket = ? AND message_id = ?"
             ))
             .await?,
+            // `author_id` is written once, by the insert, so its TTL is the
+            // message's remaining lifetime.
+            get_with_ttl: prepare(format!(
+                "SELECT {MESSAGE_COLUMNS}, TTL(author_id) FROM messages \
+                 WHERE room_id = ? AND bucket = ? AND message_id = ?"
+            ))
+            .await?,
             newest_in_bucket: prepare(format!(
                 "SELECT {MESSAGE_COLUMNS} FROM messages \
                  WHERE room_id = ? AND bucket = ? AND message_id < ? AND message_id > ? LIMIT ?"
@@ -319,6 +335,54 @@ impl MessageStore {
             .await?,
             buckets_from: prepare(
                 "SELECT bucket FROM room_buckets WHERE room_id = ? AND bucket >= ? ORDER BY bucket ASC LIMIT ?"
+                    .into(),
+            )
+            .await?,
+            edit_message: prepare(
+                "UPDATE messages USING TIMESTAMP ? AND TTL ? SET content = ?, edited_at = ?, version = ? \
+                 WHERE room_id = ? AND bucket = ? AND message_id = ?"
+                    .into(),
+            )
+            .await?,
+            // Clearing to '' instead of null: setting a column to null writes
+            // a tombstone (docs/design.md 4.2).
+            delete_message: prepare(
+                "UPDATE messages USING TIMESTAMP ? AND TTL ? SET deleted = true, content = '', version = ? \
+                 WHERE room_id = ? AND bucket = ? AND message_id = ?"
+                    .into(),
+            )
+            .await?,
+            get_many: prepare(format!(
+                "SELECT {MESSAGE_COLUMNS} FROM messages WHERE room_id = ? AND bucket = ? AND message_id IN ?"
+            ))
+            .await?,
+            insert_change: prepare(
+                "INSERT INTO room_changes (room_id, day, change_id, message_id, kind) VALUES (?, ?, ?, ?, ?) \
+                 USING TTL ?"
+                    .into(),
+            )
+            .await?,
+            changes_in_day: prepare(
+                "SELECT change_id, message_id FROM room_changes \
+                 WHERE room_id = ? AND day = ? AND change_id > ? LIMIT ?"
+                    .into(),
+            )
+            .await?,
+            set_reaction: prepare(
+                "UPDATE reactions USING TIMESTAMP ? AND TTL ? SET active = ? \
+                 WHERE room_id = ? AND bucket = ? AND message_id = ? AND emoji = ? AND user_id = ?"
+                    .into(),
+            )
+            .await?,
+            reactions_in_range: prepare(
+                "SELECT message_id, emoji, user_id, active FROM reactions \
+                 WHERE room_id = ? AND bucket = ? AND message_id >= ? AND message_id <= ?"
+                    .into(),
+            )
+            .await?,
+            reactions_for_emoji: prepare(
+                "SELECT active FROM reactions \
+                 WHERE room_id = ? AND bucket = ? AND message_id = ? AND emoji = ?"
                     .into(),
             )
             .await?,
@@ -401,6 +465,38 @@ impl MessageStore {
         Ok(row.and_then(from_row))
     }
 
+    /// A message and its remaining TTL (`None`: it never expires). Changes
+    /// to a message write their cells with this TTL, so no cell outlives
+    /// the row (docs/design.md 11.3).
+    pub async fn get_with_ttl(
+        &self,
+        room_id: Uuid,
+        id: MessageId,
+    ) -> Result<Option<(StoredMessage, Option<Duration>)>, StoreError> {
+        type Row = (
+            i64,
+            Uuid,
+            Option<String>,
+            Option<OffsetDateTime>,
+            Option<bool>,
+            Option<i64>,
+            Option<i32>,
+        );
+        let result = self
+            .session
+            .execute_unpaged(&self.get_with_ttl, (room_id, id.bucket(), id.as_i64()))
+            .await
+            .map_err(StoreError::new)?;
+        let rows = result.into_rows_result().map_err(StoreError::new)?;
+        let Some((id, author, content, edited_at, deleted, version, ttl)) =
+            rows.maybe_first_row::<Row>().map_err(StoreError::new)?
+        else {
+            return Ok(None);
+        };
+        let ttl = ttl.map(|secs| Duration::from_secs(u64::try_from(secs).unwrap_or(0)));
+        Ok(from_row((id, author, content, edited_at, deleted, version)).map(|m| (m, ttl)))
+    }
+
     async fn messages(
         &self,
         statement: &PreparedStatement,
@@ -435,6 +531,341 @@ impl MessageStore {
             .map(|row| row.map(|(bucket,)| bucket).map_err(StoreError::new))
             .collect()
     }
+}
+
+/// Why a message appears in the change feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i8)]
+pub enum ChangeKind {
+    Edit = 1,
+    Delete = 2,
+    Reaction = 3,
+    /// A message acknowledged long after its ID was assigned (a retry of a
+    /// slow first attempt): a client that resumed past its ID learns of it
+    /// from the change feed (docs/design.md 16.1).
+    LateInsert = 4,
+}
+
+/// Change rows are kept this long; an older change cursor means a full
+/// reload.
+pub const CHANGE_RETENTION: Duration = Duration::from_secs(7 * 24 * 3600);
+const MAX_CHANGES: usize = 500;
+
+/// One emoji's reactions on one message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReactionSummary {
+    pub emoji: String,
+    pub count: u32,
+    /// Whether `viewer` (the caller) is one of them.
+    pub me: bool,
+}
+
+fn ttl_secs(ttl: Option<Duration>) -> i32 {
+    // CQL TTL 0 means "no TTL".
+    ttl.map_or(0, |ttl| {
+        i32::try_from(ttl.as_secs().max(1)).unwrap_or(i32::MAX)
+    })
+}
+
+impl MessageStore {
+    /// Replaces a message's content. `write_ts` must be above the message's
+    /// current version (callers use `max(now, version + 1)`), so this edit
+    /// wins over any replay of the original insert, whose timestamp is the
+    /// ID's. Callers check the message exists first: an UPDATE of a missing
+    /// row would create one.
+    pub async fn edit(
+        &self,
+        room_id: Uuid,
+        id: MessageId,
+        content: &str,
+        edited_at: OffsetDateTime,
+        write_ts: i64,
+        ttl: Option<Duration>,
+    ) -> Result<(), StoreError> {
+        self.session
+            .execute_unpaged(
+                &self.edit_message,
+                (
+                    write_ts,
+                    ttl_secs(ttl),
+                    content,
+                    edited_at,
+                    write_ts,
+                    room_id,
+                    id.bucket(),
+                    id.as_i64(),
+                ),
+            )
+            .await
+            .map(|_| ())
+            .map_err(StoreError::new)
+    }
+
+    /// Soft-deletes a message: a flag and cleared content, not a row delete
+    /// (docs/design.md 4.2).
+    pub async fn delete(
+        &self,
+        room_id: Uuid,
+        id: MessageId,
+        write_ts: i64,
+        ttl: Option<Duration>,
+    ) -> Result<(), StoreError> {
+        self.session
+            .execute_unpaged(
+                &self.delete_message,
+                (
+                    write_ts,
+                    ttl_secs(ttl),
+                    write_ts,
+                    room_id,
+                    id.bucket(),
+                    id.as_i64(),
+                ),
+            )
+            .await
+            .map(|_| ())
+            .map_err(StoreError::new)
+    }
+
+    /// Current state of several messages, one query per bucket.
+    pub async fn get_many(
+        &self,
+        room_id: Uuid,
+        ids: &[MessageId],
+    ) -> Result<Vec<StoredMessage>, StoreError> {
+        let mut by_bucket: std::collections::BTreeMap<i32, Vec<i64>> =
+            std::collections::BTreeMap::new();
+        for id in ids {
+            by_bucket.entry(id.bucket()).or_default().push(id.as_i64());
+        }
+        let mut out = Vec::with_capacity(ids.len());
+        for (bucket, ids) in by_bucket {
+            out.extend(
+                self.messages(&self.get_many, (room_id, bucket, ids))
+                    .await?,
+            );
+        }
+        out.sort_unstable_by_key(|m| m.id);
+        Ok(out)
+    }
+
+    /// Records that a message changed, for the change feed. Written before
+    /// the change itself: if the change then fails, the feed points at an
+    /// unchanged message, which is harmless; the other order could lose a
+    /// change from the feed.
+    pub async fn record_change(
+        &self,
+        room_id: Uuid,
+        change_id: MessageId,
+        message_id: MessageId,
+        kind: ChangeKind,
+        ttl: Option<Duration>,
+    ) -> Result<(), StoreError> {
+        let ttl = ttl.map_or(CHANGE_RETENTION, |t| t.min(CHANGE_RETENTION));
+        self.session
+            .execute_unpaged(
+                &self.insert_change,
+                (
+                    room_id,
+                    change_id.day(),
+                    change_id.as_i64(),
+                    message_id.as_i64(),
+                    kind as i8,
+                    ttl_secs(Some(ttl)),
+                ),
+            )
+            .await
+            .map(|_| ())
+            .map_err(StoreError::new)
+    }
+
+    /// Messages changed after `after` (exclusive), up to `now`: their IDs
+    /// without duplicates, and false if the feed can't answer completely
+    /// (the cursor is older than its retention, or there are too many).
+    pub async fn changes_since(
+        &self,
+        room_id: Uuid,
+        after: MessageId,
+        now: MessageId,
+    ) -> Result<(Vec<MessageId>, bool), StoreError> {
+        let retention_days = (CHANGE_RETENTION.as_secs() / 86_400) as i32;
+        if now.day() - after.day() >= retention_days {
+            return Ok((Vec::new(), false));
+        }
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for day in after.day()..=now.day() {
+            let result = self
+                .session
+                .execute_unpaged(
+                    &self.changes_in_day,
+                    (room_id, day, after.as_i64(), cql_limit(MAX_CHANGES + 1)),
+                )
+                .await
+                .map_err(StoreError::new)?;
+            let rows = result.into_rows_result().map_err(StoreError::new)?;
+            for row in rows.rows::<(i64, i64)>().map_err(StoreError::new)? {
+                let (_, message_id) = row.map_err(StoreError::new)?;
+                if let Some(id) = MessageId::from_i64(message_id)
+                    && seen.insert(id)
+                {
+                    ids.push(id);
+                }
+            }
+            if ids.len() > MAX_CHANGES {
+                ids.truncate(MAX_CHANGES);
+                return Ok((ids, false));
+            }
+        }
+        Ok((ids, true))
+    }
+
+    /// Adds or removes one user's reaction. A soft toggle (`active`), never a
+    /// row delete, for the same tombstone reason as messages. Last write wins
+    /// between two toggles of the same reaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_reaction(
+        &self,
+        room_id: Uuid,
+        id: MessageId,
+        emoji: &str,
+        user_id: Uuid,
+        active: bool,
+        write_ts: i64,
+        ttl: Option<Duration>,
+    ) -> Result<(), StoreError> {
+        self.session
+            .execute_unpaged(
+                &self.set_reaction,
+                (
+                    write_ts,
+                    ttl_secs(ttl),
+                    active,
+                    room_id,
+                    id.bucket(),
+                    id.as_i64(),
+                    emoji,
+                    user_id,
+                ),
+            )
+            .await
+            .map(|_| ())
+            .map_err(StoreError::new)
+    }
+
+    /// How many users currently have this reaction on this message.
+    pub async fn reaction_count(
+        &self,
+        room_id: Uuid,
+        id: MessageId,
+        emoji: &str,
+    ) -> Result<u32, StoreError> {
+        let result = self
+            .session
+            .execute_unpaged(
+                &self.reactions_for_emoji,
+                (room_id, id.bucket(), id.as_i64(), emoji),
+            )
+            .await
+            .map_err(StoreError::new)?;
+        let rows = result.into_rows_result().map_err(StoreError::new)?;
+        let mut count = 0;
+        for row in rows.rows::<(Option<bool>,)>().map_err(StoreError::new)? {
+            if row.map_err(StoreError::new)?.0 == Some(true) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Reactions for a set of messages (one page, typically), as seen by
+    /// `viewer`. One range query per bucket the messages span.
+    pub async fn reactions_for(
+        &self,
+        room_id: Uuid,
+        ids: &[MessageId],
+        viewer: Uuid,
+    ) -> Result<std::collections::HashMap<MessageId, Vec<ReactionSummary>>, StoreError> {
+        let mut ranges: std::collections::BTreeMap<i32, (i64, i64)> =
+            std::collections::BTreeMap::new();
+        for id in ids {
+            let range = ranges.entry(id.bucket()).or_insert((i64::MAX, i64::MIN));
+            range.0 = range.0.min(id.as_i64());
+            range.1 = range.1.max(id.as_i64());
+        }
+        let wanted: HashSet<i64> = ids.iter().map(|id| id.as_i64()).collect();
+        // (message, emoji) -> (count, me)
+        let mut totals: std::collections::HashMap<(i64, String), (u32, bool)> =
+            std::collections::HashMap::new();
+        for (bucket, (low, high)) in ranges {
+            let result = self
+                .session
+                .execute_unpaged(&self.reactions_in_range, (room_id, bucket, low, high))
+                .await
+                .map_err(StoreError::new)?;
+            let rows = result.into_rows_result().map_err(StoreError::new)?;
+            for row in rows
+                .rows::<(i64, String, Uuid, Option<bool>)>()
+                .map_err(StoreError::new)?
+            {
+                let (message_id, emoji, user_id, active) = row.map_err(StoreError::new)?;
+                if active != Some(true) || !wanted.contains(&message_id) {
+                    continue;
+                }
+                let entry = totals.entry((message_id, emoji)).or_default();
+                entry.0 += 1;
+                entry.1 |= user_id == viewer;
+            }
+        }
+        let mut out: std::collections::HashMap<MessageId, Vec<ReactionSummary>> =
+            std::collections::HashMap::new();
+        for ((message_id, emoji), (count, me)) in totals {
+            if let Some(id) = MessageId::from_i64(message_id) {
+                out.entry(id)
+                    .or_default()
+                    .push(ReactionSummary { emoji, count, me });
+            }
+        }
+        // A stable order: the order the app offers them in.
+        let rank = |emoji: &str| {
+            protocol::reactions::ALLOWED
+                .iter()
+                .position(|e| *e == emoji)
+                .unwrap_or(usize::MAX)
+        };
+        for list in out.values_mut() {
+            list.sort_by_key(|r| rank(&r.emoji));
+        }
+        Ok(out)
+    }
+}
+
+/// Unread counts are exact up to this many and shown as "99+" beyond.
+pub const UNREAD_CAP: usize = 99;
+
+/// Messages from others after `after`, not deleted: (count, capped). Reads
+/// at most `UNREAD_CAP + 1` messages, whatever the room's size, so the cost
+/// is bounded per reader (docs/design.md 9).
+///
+/// Capped means "at least 100 messages since your read position", which can
+/// include some of your own; the count is then reported as `UNREAD_CAP` and
+/// shown as "99+". Exact below the cap.
+pub async fn count_unread<S: HistorySource>(
+    source: &S,
+    room_id: Uuid,
+    after: MessageId,
+    floor: MessageId,
+    viewer: Uuid,
+) -> Result<(u32, bool), StoreError> {
+    let forward = read_forward(source, room_id, after, floor, UNREAD_CAP + 1).await?;
+    let count = forward
+        .messages
+        .iter()
+        .filter(|m| m.author_id != viewer && !m.deleted && m.id > after)
+        .count();
+    let capped = count > UNREAD_CAP || !forward.complete;
+    let count = if capped { UNREAD_CAP } else { count };
+    Ok((count as u32, capped))
 }
 
 fn cql_limit(limit: usize) -> i32 {
@@ -821,6 +1252,34 @@ mod tests {
             let (seen, _) = walk(&fake, no_floor(), limit).await;
             assert_eq!(seen, fake.all_newest_first(), "limit {limit}");
         }
+    }
+
+    #[tokio::test]
+    async fn unread_counts_others_messages_only_and_caps() {
+        let me = Uuid::from_u128(7);
+        let mut fake = Fake::default();
+        for n in 0..5 {
+            fake.add(msg(1, n));
+        }
+        let mut mine = msg(1, 10);
+        mine.author_id = me;
+        fake.add(mine);
+        let mut deleted = msg(1, 11);
+        deleted.deleted = true;
+        fake.add(deleted);
+        // Read up to the second message: three others' messages remain.
+        let (count, capped) = count_unread(&fake, ROOM, msg(1, 1).id, no_floor(), me)
+            .await
+            .unwrap();
+        assert_eq!((count, capped), (3, false));
+
+        for n in 100..300 {
+            fake.add(msg(2, n));
+        }
+        let (count, capped) = count_unread(&fake, ROOM, msg(1, 1).id, no_floor(), me)
+            .await
+            .unwrap();
+        assert_eq!((count, capped), (99, true));
     }
 
     #[tokio::test]

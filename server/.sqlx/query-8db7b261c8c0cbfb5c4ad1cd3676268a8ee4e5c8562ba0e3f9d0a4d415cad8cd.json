@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.message_id, s.room_id\n        FROM message_search s\n        JOIN memberships m ON m.room_id = s.room_id AND m.user_id = $1\n        JOIN rooms r ON r.id = s.room_id\n        WHERE s.tsv @@ websearch_to_tsquery($2::regconfig, $3)\n          AND NOT s.deleted\n          AND (s.expires_at IS NULL OR s.expires_at > now())\n          AND s.message_id >= r.history_floor\n          AND ($4::uuid IS NULL OR s.room_id = $4)\n          AND ($5::bigint IS NULL OR s.message_id < $5)\n        ORDER BY s.message_id DESC\n        LIMIT $6\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "message_search",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "message_search",
+            "name": "room_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "regconfig",
+            "kind": "Simple"
+          }
+        },
+        "Text",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8db7b261c8c0cbfb5c4ad1cd3676268a8ee4e5c8562ba0e3f9d0a4d415cad8cd"
+}

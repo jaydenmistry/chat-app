@@ -8,4 +8,5 @@
 pub mod api;
 pub mod frames;
 pub mod ids;
+pub mod reactions;
 pub mod validate;

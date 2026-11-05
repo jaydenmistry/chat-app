@@ -89,12 +89,15 @@ pub struct UserRoom {
     pub created_at: OffsetDateTime,
     /// For DMs, the other member's ID.
     pub dm_peer: Option<Uuid>,
+    /// The member's read position (a message ID; 0 for none).
+    pub last_read_id: i64,
+    pub history_floor: i64,
 }
 
 pub async fn rooms_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<UserRoom>, sqlx::Error> {
     let rows = sqlx::query!(
         r#"
-        SELECT r.id, r.kind, r.name, r.created_at, m.role,
+        SELECT r.id, r.kind, r.name, r.created_at, m.role, m.last_read_id, r.history_floor,
                (SELECT other.user_id FROM memberships other
                 WHERE other.room_id = r.id AND other.user_id <> $1 AND r.kind = 'dm'
                 LIMIT 1) AS dm_peer
@@ -115,6 +118,8 @@ pub async fn rooms_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<UserRoom
             role: role_from_db(&r.role),
             created_at: r.created_at,
             dm_peer: r.dm_peer,
+            last_read_id: r.last_read_id,
+            history_floor: r.history_floor,
         })
         .collect())
 }
@@ -127,7 +132,7 @@ pub async fn room_for_user(
 ) -> Result<Option<UserRoom>, sqlx::Error> {
     let row = sqlx::query!(
         r#"
-        SELECT r.id, r.kind, r.name, r.created_at, m.role,
+        SELECT r.id, r.kind, r.name, r.created_at, m.role, m.last_read_id, r.history_floor,
                (SELECT other.user_id FROM memberships other
                 WHERE other.room_id = r.id AND other.user_id <> $2 AND r.kind = 'dm'
                 LIMIT 1) AS dm_peer
@@ -146,6 +151,8 @@ pub async fn room_for_user(
         role: role_from_db(&r.role),
         created_at: r.created_at,
         dm_peer: r.dm_peer,
+        last_read_id: r.last_read_id,
+        history_floor: r.history_floor,
     }))
 }
 
@@ -217,6 +224,8 @@ pub async fn create_room(
         role: MemberRole::Owner,
         created_at,
         dm_peer: None,
+        last_read_id: 0,
+        history_floor: 0,
     })
 }
 
@@ -355,6 +364,9 @@ pub async fn delete_room(pool: &PgPool, room_id: Uuid) -> Result<Vec<Uuid>, sqlx
     sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id)
         .execute(&mut *tx)
         .await?;
+    sqlx::query!("DELETE FROM message_search WHERE room_id = $1", room_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(members)
 }
@@ -472,4 +484,112 @@ pub async fn accept_invite(
         .await?;
     tx.commit().await?;
     Ok(InviteOutcome::Joined(invite.room_id))
+}
+
+/// Moves a read position forward. Returns false if it was already at or
+/// past `message_id` (or the user isn't a member): read marks can arrive out
+/// of order, and a position never moves back.
+pub async fn mark_read(
+    pool: &PgPool,
+    room_id: Uuid,
+    user_id: Uuid,
+    message_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        UPDATE memberships SET last_read_id = $3
+        WHERE room_id = $1 AND user_id = $2 AND last_read_id < $3
+        "#,
+        room_id,
+        user_id,
+        message_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub struct ReceiptRow {
+    pub count: i64,
+    pub readers: Vec<MemberRow>,
+}
+
+/// Members other than `except` who have read at least up to `message_id`:
+/// how many, and the 20 most recent. Both use the
+/// `(room_id, last_read_id)` index, so the cost is bounded by the room's
+/// member count whatever its message count.
+pub async fn receipts(
+    pool: &PgPool,
+    room_id: Uuid,
+    message_id: i64,
+    except: Uuid,
+) -> Result<ReceiptRow, sqlx::Error> {
+    let count = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) AS "count!" FROM memberships
+        WHERE room_id = $1 AND last_read_id >= $2 AND user_id <> $3
+        "#,
+        room_id,
+        message_id,
+        except,
+    )
+    .fetch_one(pool)
+    .await?;
+    let rows = sqlx::query!(
+        r#"
+        SELECT u.id, u.handle, u.display_name, u.avatar_url, u.is_guest, m.role, m.joined_at
+        FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.room_id = $1 AND m.last_read_id >= $2 AND m.user_id <> $3
+        ORDER BY m.last_read_id DESC
+        LIMIT 20
+        "#,
+        room_id,
+        message_id,
+        except,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(ReceiptRow {
+        count,
+        readers: rows
+            .into_iter()
+            .map(|r| MemberRow {
+                user_id: r.id,
+                handle: r.handle,
+                display_name: r.display_name,
+                avatar_url: r.avatar_url,
+                is_guest: r.is_guest,
+                role: role_from_db(&r.role),
+                joined_at: r.joined_at,
+            })
+            .collect(),
+    })
+}
+
+/// One member, as `member.joined` announces them.
+pub async fn member(
+    pool: &PgPool,
+    room_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<MemberRow>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        SELECT u.id, u.handle, u.display_name, u.avatar_url, u.is_guest, m.role, m.joined_at
+        FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.room_id = $1 AND m.user_id = $2
+        "#,
+        room_id,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| MemberRow {
+        user_id: r.id,
+        handle: r.handle,
+        display_name: r.display_name,
+        avatar_url: r.avatar_url,
+        is_guest: r.is_guest,
+        role: role_from_db(&r.role),
+        joined_at: r.joined_at,
+    }))
 }
