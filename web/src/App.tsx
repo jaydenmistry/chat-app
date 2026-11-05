@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiRequestError, api } from "./api";
-import { Account } from "./Account";
+import { ChatApp } from "./chat/ChatApp";
 import type { Me } from "./protocol/generated/Me";
 import { SignIn } from "./SignIn";
 
@@ -34,6 +34,6 @@ export function App() {
     case "signed-out":
       return <SignIn onSignedIn={(me) => setState({ kind: "signed-in", me })} />;
     case "signed-in":
-      return <Account me={state.me} onSignedOut={() => setState({ kind: "signed-out" })} />;
+      return <ChatApp me={state.me} onSignedOut={() => setState({ kind: "signed-out" })} />;
   }
 }
