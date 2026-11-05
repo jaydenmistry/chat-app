@@ -8,6 +8,8 @@ pub mod config;
 pub mod healthcheck;
 pub mod http;
 pub mod ids;
+pub mod permissions;
+pub mod realtime;
 pub mod startup;
 pub mod state;
 pub mod telemetry;

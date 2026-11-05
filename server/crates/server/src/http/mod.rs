@@ -5,7 +5,9 @@ pub mod client_ip;
 pub mod cookies;
 pub mod error;
 pub mod health;
+pub mod messages;
 pub mod origin;
+pub mod rooms;
 
 use std::time::Duration;
 
@@ -42,6 +44,22 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(auth::current_user))
         .route("/sessions", get(auth::list_sessions))
         .route("/sessions/{id}", delete(auth::revoke_session))
+        .route("/rooms", get(rooms::list).post(rooms::create))
+        .route("/rooms/public", get(rooms::directory))
+        .route("/rooms/{id}", delete(rooms::delete))
+        .route("/rooms/{id}/join", post(rooms::join))
+        .route("/rooms/{id}/leave", post(rooms::leave))
+        .route("/rooms/{id}/members", get(rooms::members))
+        .route(
+            "/rooms/{id}/members/{user_id}",
+            delete(rooms::remove_member),
+        )
+        .route("/rooms/{id}/invites", post(rooms::create_invite))
+        .route("/rooms/{id}/messages", get(messages::history))
+        .route("/invites/{code}/accept", post(rooms::accept_invite))
+        .route("/dms", post(rooms::open_dm))
+        .route("/users", get(rooms::profiles))
+        .route("/sync", post(messages::sync))
         // `route_layer` runs only for matched routes, so unknown paths get a
         // 404 rather than a 403.
         .route_layer(middleware::from_fn_with_state(

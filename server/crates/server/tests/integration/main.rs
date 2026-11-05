@@ -20,6 +20,7 @@ mod ids;
 mod infra;
 mod messages;
 mod migrations;
+mod rooms;
 
 use std::{future::Future, pin::Pin, process::ExitCode, sync::Arc, time::Duration};
 
@@ -47,6 +48,13 @@ const TESTS: &[(&str, TestFn)] = tests![
     messages::history_pages_across_real_buckets,
     messages::insert_is_idempotent,
     messages::expired_messages_leave_empty_buckets,
+    rooms::public_rooms_can_be_created_browsed_joined_and_left,
+    rooms::private_rooms_are_invite_only,
+    rooms::guests_cant_create_rooms,
+    rooms::only_the_owner_removes_members,
+    rooms::deleting_a_room_removes_everyone,
+    rooms::one_dm_per_pair,
+    rooms::non_members_see_nothing,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,
