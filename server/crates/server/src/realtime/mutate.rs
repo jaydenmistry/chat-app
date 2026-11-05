@@ -33,6 +33,7 @@ use crate::{
         events::{self, Event},
         send::{Outcome, Publish, Sender, WRITE_TIMEOUT, error},
     },
+    search,
     state::AppState,
 };
 
@@ -214,6 +215,7 @@ pub async fn edit(
     {
         return error(req_id, FrameErrorCode::Unavailable, "try again");
     }
+    search::notify(state, room_id, message_id);
     ok(
         req_id,
         room_id,
@@ -254,6 +256,7 @@ pub async fn delete(
     {
         return error(req_id, FrameErrorCode::Unavailable, "try again");
     }
+    search::notify(state, room_id, message_id);
     ok(
         req_id,
         room_id,

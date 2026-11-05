@@ -8,6 +8,7 @@ pub mod health;
 pub mod messages;
 pub mod origin;
 pub mod rooms;
+pub mod search;
 
 use std::time::Duration;
 
@@ -61,6 +62,7 @@ pub fn router(state: AppState) -> Router {
         .route("/dms", post(rooms::open_dm))
         .route("/users", get(rooms::profiles))
         .route("/sync", post(messages::sync))
+        .route("/search", get(search::search))
         // `route_layer` runs only for matched routes, so unknown paths get a
         // 404 rather than a 403.
         .route_layer(middleware::from_fn_with_state(

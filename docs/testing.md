@@ -90,3 +90,15 @@ writer blocks, so a test would need megabytes of traffic. The hub's unit test
 | 2026-11-05 | Read state regression | `read.mark` drops `last_read_id < $3`, so marks can move backwards | `features::read_marks_unread_counts_and_receipts` | failed: a backwards mark produced a `read.updated` |
 | 2026-11-05 | Wrong counts | a reaction's count includes removed (`active = false`) rows | `features::reactions_count_once_per_user` | failed: timed out waiting for the count to drop |
 | 2026-11-05 | Read receipts leak | group-room reads are published to the whole room | `features::read_marks_unread_counts_and_receipts` | failed: another member received `read.updated` |
+| 2026-11-05 | Search leak | the search query's membership join no longer filters on the caller | `features::search_respects_membership_edits_and_deletes` | failed: bob's results included a message from a private room he isn't in |
+| 2026-11-05 | Deleted content shown | search results aren't checked against Scylla (no hydration) | `features::search_respects_membership_edits_and_deletes` | failed: a just-deleted message came back |
+| 2026-11-05 | Unindexed messages | the send script doesn't add the stream entry | `features::search_respects_membership_edits_and_deletes` | failed: "never happened: both messages indexed" |
+| 2026-11-05 | Stale index | edits don't add a stream entry | `features::search_respects_membership_edits_and_deletes` | failed: "never happened: the edit indexed" |
+
+The Phase 3 plants were applied and reverted by a script. Its first
+version restored each file by moving a backup back, which kept the
+backup's older modification time, so cargo didn't rebuild and the next
+plant ran on top of the previous one. That showed up as the hydration plant
+failing on the membership assertion. The script now rewrites the file, and
+every row above comes from a rerun after a clean rebuild, each plant on its
+own, failing at the assertion named.

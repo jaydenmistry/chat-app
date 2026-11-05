@@ -2,15 +2,18 @@
 //! change feed, read state and receipts, membership frames. Most tests use
 //! two instances, as in production.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use protocol::{
-    api::{HistoryPage, Message, Receipts, RoomInfo, SyncResponse},
+    api::{HistoryPage, Message, Receipts, RoomInfo, SearchResults, SyncResponse},
     frames::{ClientFrame, FrameErrorCode, ServerFrame},
     ids::MessageId,
 };
 use serde_json::json;
-use server::realtime::send::{claim_value, fingerprint};
+use server::{
+    config::{Config, Secret},
+    realtime::send::{claim_value, fingerprint},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -435,7 +438,7 @@ pub async fn read_marks_unread_counts_and_receipts(infra: Arc<Infra>) {
     assert_eq!(unread_of(&b.my_rooms(&bob).await, room.id), (1, false));
     // In a group, reads aren't broadcast to the room (docs/design.md 9).
     ada_ws
-        .expect_none("bob's read", std::time::Duration::from_millis(300), |f| {
+        .expect_none("bob's read", Duration::from_millis(300), |f| {
             matches!(f, ServerFrame::ReadUpdated { .. })
         })
         .await;
@@ -453,11 +456,9 @@ pub async fn read_marks_unread_counts_and_receipts(infra: Arc<Infra>) {
             .await;
     }
     bob_tab2
-        .expect_none(
-            "a backwards read",
-            std::time::Duration::from_millis(300),
-            |f| matches!(f, ServerFrame::ReadUpdated { .. }),
-        )
+        .expect_none("a backwards read", Duration::from_millis(300), |f| {
+            matches!(f, ServerFrame::ReadUpdated { .. })
+        })
         .await;
     assert_eq!(unread_of(&a.my_rooms(&bob).await, room.id), (1, false));
 
@@ -577,4 +578,118 @@ pub async fn member_frames_announce_joins_and_leaves(infra: Arc<Infra>) {
             user_id: bob.me.id,
         }
     );
+}
+
+async fn search(app: &TestApp, who: &User, query: &str) -> Vec<(String, Uuid)> {
+    let url = reqwest::Url::parse_with_params(&app.url("/api/search"), [("q", query)]).unwrap();
+    let resp = app
+        .client
+        .get(url)
+        .header(reqwest::header::COOKIE, &who.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let results: SearchResults = resp.json().await.unwrap();
+    results
+        .messages
+        .into_iter()
+        .map(|m| (m.content, m.room_id))
+        .collect()
+}
+
+/// Polls until `$check` holds: the index is eventually consistent, a few
+/// seconds behind (docs/design.md 10). A macro rather than a function
+/// taking an async closure, whose future can't be shown to be `Send`.
+macro_rules! eventually {
+    ($what:expr, $check:expr) => {{
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while !$check {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never happened: {}",
+                $what
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }};
+}
+
+/// Search covers only the caller's rooms, follows edits, and never shows a
+/// deleted message, even before the index catches up.
+pub async fn search_respects_membership_edits_and_deletes(infra: Arc<Infra>) {
+    // Its own Redis: the search stream is shared by every instance on a
+    // Redis, and other tests' instances have other databases.
+    let (_redis, redis_url) = infra.dedicated_redis().await;
+    let point_at_redis = |c: &mut Config| c.redis_url = Secret::new(redis_url.clone());
+    let a = TestApp::spawn_with(&infra, point_at_redis).await;
+    let b = a.spawn_peer(&infra, point_at_redis).await;
+    let ada = user(&a, "ada").await;
+    let bob = user(&a, "bob").await;
+    let open = a.create_room(&ada, "Open", "public").await;
+    let secret = a.create_room(&ada, "Secret", "private").await;
+    a.join(&bob, &open).await;
+    let mut ws = connect(&a, &ada.cookie).await;
+
+    let public_fox = ws.send_message(open.id, "the quick brown fox").await;
+    let private_fox = ws.send_message(secret.id, "a private fox").await;
+    // Indexed by whichever instance claims the entries.
+    eventually!(
+        "both messages indexed",
+        search(&b, &ada, "fox").await.len() == 2
+    );
+    assert_eq!(
+        search(&a, &ada, "fox").await,
+        [
+            ("a private fox".to_string(), secret.id),
+            ("the quick brown fox".to_string(), open.id)
+        ],
+        "newest first"
+    );
+    assert_eq!(
+        search(&a, &bob, "foxes").await,
+        [("the quick brown fox".to_string(), open.id)],
+        "only rooms bob is in (and stemmed: foxes matches fox)"
+    );
+
+    // Deleted: gone from results at once, whatever the index says.
+    assert!(is_ok(&delete(&mut ws, secret.id, private_fox.id).await));
+    assert_eq!(search(&a, &ada, "private").await, []);
+
+    // Edited: the old words stop matching once the index catches up, and
+    // results always show the current text.
+    assert!(is_ok(
+        &edit(&mut ws, open.id, public_fox.id, "a lazy dog").await
+    ));
+    // Until then a stale hit for "fox" may come back, but with today's text.
+    for (content, _) in search(&a, &bob, "fox").await {
+        assert_eq!(content, "a lazy dog");
+    }
+    eventually!(
+        "the edit indexed",
+        search(&a, &bob, "dog").await.len() == 1 && search(&a, &bob, "fox").await.is_empty()
+    );
+
+    // Leaving: results go with the membership, immediately.
+    let resp = a
+        .post_as(&bob, &format!("/api/rooms/{}/leave", open.id), None)
+        .await;
+    assert!(resp.status().is_success());
+    assert_eq!(search(&a, &bob, "dog").await, []);
+
+    for bad in ["", "   ", &"x".repeat(201)] {
+        let url = reqwest::Url::parse_with_params(&a.url("/api/search"), [("q", bad)]).unwrap();
+        let resp = a
+            .client
+            .get(url)
+            .header(reqwest::header::COOKIE, &ada.cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad:?}"
+        );
+    }
 }

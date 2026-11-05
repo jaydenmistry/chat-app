@@ -10,6 +10,7 @@ pub mod http;
 pub mod ids;
 pub mod permissions;
 pub mod realtime;
+pub mod search;
 pub mod startup;
 pub mod state;
 pub mod telemetry;
@@ -100,7 +101,11 @@ pub async fn serve(
         shutting_down: AtomicBool::new(false),
     });
 
-    let presence_task = tokio::spawn(presence::run_background(state.clone(), background_stopped));
+    let presence_task = tokio::spawn(presence::run_background(
+        state.clone(),
+        background_stopped.clone(),
+    ));
+    let indexer_task = tokio::spawn(search::run_indexer(state.clone(), background_stopped));
     let app = http::router(state.clone());
     tracing::info!(addr = %listener.local_addr()?, %instance_id, "listening");
     axum::serve(
@@ -125,7 +130,7 @@ pub async fn serve(
     // Let the background tasks finish (the lease task releases its worker
     // ID), but don't hang on them.
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(lease, subscriber_task, presence_task);
+        let _ = tokio::join!(lease, subscriber_task, presence_task, indexer_task);
     })
     .await;
     Ok(())

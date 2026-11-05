@@ -80,6 +80,7 @@ const TESTS: &[(&str, TestFn)] = tests![
     features::read_marks_unread_counts_and_receipts,
     features::dm_reads_are_live_receipts,
     features::member_frames_announce_joins_and_leaves,
+    features::search_respects_membership_edits_and_deletes,
     failures::redis_outage_then_resync,
     failures::instance_restart_loses_nothing,
     auth::signup_creates_account_and_session,

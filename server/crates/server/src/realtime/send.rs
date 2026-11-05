@@ -30,6 +30,7 @@ use crate::{
     auth::token,
     http::messages::{RESUME_OVERLAP_MS, to_api},
     realtime::events::{self, Event},
+    search,
     state::AppState,
 };
 
@@ -41,22 +42,38 @@ const IDEMPOTENCY_TTL_SECS: u64 = 24 * 3600;
 /// Retry a failed publish for about this long, in the background.
 const PUBLISH_ATTEMPTS: u32 = 5;
 
-/// Claims an idempotency key, or returns what it was claimed with.
+/// Claims an idempotency key, or returns what it was claimed with, and adds
+/// the message to the search stream.
 ///
-/// KEYS[1] = idem:<user>:<key>; ARGV = new value, TTL in seconds. Returns
-/// nil if the key was new (and is now ours), else the stored value. One
-/// script, so check-and-set can't interleave with a concurrent attempt.
-/// Phase 4 adds the rate limit and the search-stream entry goes here too,
-/// so all three stay atomic.
+/// KEYS[1] = idem:<user>:<key>, KEYS[2] = the search stream. ARGV = new
+/// value, TTL in seconds, room ID, the value's `<room>:<fingerprint>` part,
+/// the stream's length cap. Returns nil if the key was new (and is now
+/// ours), else the stored value.
+///
+/// One script, so check-and-set can't interleave with a concurrent attempt,
+/// and the search entry exists before the Scylla write: a crash after the
+/// write can't leave the message unindexed (docs/design.md 10). A retry
+/// adds a fresh entry, because the first attempt's may have been dropped
+/// while its write was missing. A conflicting reuse of the key adds none.
+/// Phase 4 adds the rate limit here too.
 static CLAIM_KEY: LazyLock<Script> = LazyLock::new(|| {
     Script::new(
         r"
         local existing = redis.call('GET', KEYS[1])
+        local value = ARGV[1]
         if existing then
-          return existing
+          local sep = string.find(existing, ':', 1, true)
+          if not sep or string.sub(existing, sep + 1) ~= ARGV[4] then
+            return existing
+          end
+          value = existing
+        else
+          redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
         end
-        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-        return false
+        local id = string.sub(value, 1, string.find(value, ':', 1, true) - 1)
+        redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[5], '*',
+                   'room_id', ARGV[3], 'message_id', id)
+        return existing or false
         ",
     )
 });
@@ -209,8 +226,12 @@ pub async fn send(
     let fingerprint = fingerprint(room_id, content);
     let claimed: Option<String> = match CLAIM_KEY
         .key(format!("idem:{}:{idempotency_key}", sender.user_id))
+        .key(search::STREAM)
         .arg(claim_value(candidate, room_id, &fingerprint))
         .arg(IDEMPOTENCY_TTL_SECS)
+        .arg(room_id.to_string())
+        .arg(format!("{room_id}:{fingerprint}"))
+        .arg(search::MAX_STREAM_LEN)
         .invoke_async(&mut state.redis.clone())
         .await
     {
