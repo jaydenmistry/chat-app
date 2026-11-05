@@ -23,7 +23,7 @@ pub async fn readyz_reports_dependencies(infra: Arc<Infra>) {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(
         body,
-        json!({"postgres": true, "redis": true, "scylla": true, "shutting_down": false})
+        json!({"postgres": true, "redis": true, "scylla": true, "ids": true, "shutting_down": false})
     );
 }
 

@@ -35,6 +35,12 @@ pub struct Config {
     pub github: Option<GithubConfig>,
     pub session_ttl: Duration,
     pub guest_ttl: Duration,
+    /// Worker-ID lease timings. Not configurable by environment: the
+    /// defaults are the design. Tests shorten the quarantine.
+    pub id_lease: crate::ids::LeaseTimings,
+    /// Shifts this instance's clock for ID generation. Always 0 outside tests,
+    /// which use it to run instances with different clocks.
+    pub clock_offset_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +243,8 @@ impl Config {
             github,
             session_ttl: Duration::from_secs(session_ttl_days * 24 * 3600),
             guest_ttl: Duration::from_secs(guest_ttl_hours * 3600),
+            id_lease: crate::ids::LeaseTimings::default(),
+            clock_offset_ms: 0,
         })
     }
 

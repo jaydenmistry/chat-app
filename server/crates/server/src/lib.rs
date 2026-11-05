@@ -7,6 +7,7 @@ pub mod auth;
 pub mod config;
 pub mod healthcheck;
 pub mod http;
+pub mod ids;
 pub mod startup;
 pub mod state;
 pub mod telemetry;
@@ -14,17 +15,22 @@ pub mod telemetry;
 use std::{
     future::Future,
     net::SocketAddr,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::Context;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::watch};
+use uuid::Uuid;
 
 use crate::{
     auth::password::PasswordHasher,
     config::Config,
     http::cookies::CookiePolicy,
+    ids::IdGenerator,
     state::{AppState, Inner},
 };
 
@@ -50,11 +56,28 @@ pub async fn serve(
             "PUBLIC_URL is not https: cookies are sent without Secure (development only)"
         );
     }
+    let messages = storage::messages::MessageStore::new(stores.scylla)
+        .await
+        .context("preparing scylla statements")?;
+    let instance_id = Uuid::now_v7();
+    let ids = Arc::new(IdGenerator::new(config.clock_offset_ms));
+    // Background tasks watch this and stop when it turns true.
+    let (stop_background, background_stopped) = watch::channel(false);
+    let lease = tokio::spawn(ids::run_lease(
+        Arc::clone(&ids),
+        stores.redis.clone(),
+        instance_id,
+        config.id_lease,
+        background_stopped.clone(),
+    ));
+
     let state = AppState::new(Inner {
         config,
         pg: stores.pg,
         redis: stores.redis,
-        scylla: stores.scylla,
+        messages,
+        ids,
+        instance_id,
         http,
         passwords: PasswordHasher::new(MAX_CONCURRENT_HASHES),
         cookies,
@@ -62,7 +85,7 @@ pub async fn serve(
     });
 
     let app = http::router(state.clone());
-    tracing::info!(addr = %listener.local_addr()?, "listening");
+    tracing::info!(addr = %listener.local_addr()?, %instance_id, "listening");
     axum::serve(
         listener,
         // Makes the TCP peer address available to handlers (`ClientIp`).
@@ -72,9 +95,14 @@ pub async fn serve(
         shutdown.await;
         state.shutting_down.store(true, Ordering::Relaxed);
         tracing::info!("shutting down");
+        let _ = stop_background.send(true);
     })
     .await
-    .context("server error")
+    .context("server error")?;
+
+    // Let the lease task release its worker ID, but don't hang on it.
+    let _ = tokio::time::timeout(Duration::from_secs(5), lease).await;
+    Ok(())
 }
 
 /// Applies Postgres and Scylla migrations. Run once per deploy, by a single

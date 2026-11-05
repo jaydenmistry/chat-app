@@ -167,6 +167,13 @@ impl Infra {
             github: None,
             session_ttl: Duration::from_secs(30 * 24 * 3600),
             guest_ttl: Duration::from_secs(24 * 3600),
+            // No quarantine: every test app would otherwise wait 15 s. The
+            // quarantine only matters when Redis loses its data.
+            id_lease: server::ids::LeaseTimings {
+                quarantine: Duration::ZERO,
+                ..Default::default()
+            },
+            clock_offset_ms: 0,
         }
     }
 }

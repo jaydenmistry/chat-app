@@ -16,6 +16,7 @@ mod app;
 mod auth;
 mod github;
 mod health;
+mod ids;
 mod infra;
 mod messages;
 mod migrations;
@@ -40,6 +41,9 @@ const TESTS: &[(&str, TestFn)] = tests![
     health::request_ids_are_assigned_and_propagated,
     health::unknown_api_routes_are_json_404,
     migrations::scylla_migrations_apply_once,
+    ids::instances_get_distinct_worker_ids,
+    ids::a_stolen_lease_stops_ids_and_moves_on,
+    ids::shutdown_releases_the_lease,
     messages::history_pages_across_real_buckets,
     messages::insert_is_idempotent,
     messages::expired_messages_leave_empty_buckets,

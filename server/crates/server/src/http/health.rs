@@ -18,6 +18,8 @@ pub struct Readiness {
     postgres: bool,
     redis: bool,
     scylla: bool,
+    /// A valid worker-ID lease, so this instance can issue message IDs.
+    ids: bool,
     shutting_down: bool,
 }
 
@@ -29,10 +31,11 @@ pub async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<Readines
     let (postgres, redis, scylla) = tokio::join!(
         check("postgres", storage::postgres::ping(&state.pg)),
         check("redis", storage::redisdb::ping(&mut redis)),
-        check("scylla", storage::scylladb::ping(&state.scylla)),
+        check("scylla", storage::scylladb::ping(state.messages.session())),
     );
+    let ids = state.ids.is_ready();
     let shutting_down = state.shutting_down.load(Ordering::Relaxed);
-    let ready = postgres && redis && scylla && !shutting_down;
+    let ready = postgres && redis && scylla && ids && !shutting_down;
     let status = if ready {
         StatusCode::OK
     } else {
@@ -44,6 +47,7 @@ pub async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<Readines
             postgres,
             redis,
             scylla,
+            ids,
             shutting_down,
         }),
     )

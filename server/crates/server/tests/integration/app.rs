@@ -49,10 +49,12 @@ impl TestApp {
 
     /// The listener is bound before `serve` connects to the stores, so early
     /// requests would just queue; polling makes startup failures visible.
+    /// Also waits for the worker-ID lease, so tests can send messages.
     async fn wait_until_serving(&self) {
         for _ in 0..100 {
-            if let Ok(resp) = self.get("/healthz").send().await
-                && resp.status().is_success()
+            if let Ok(resp) = self.get("/readyz").send().await
+                && let Ok(body) = resp.json::<Value>().await
+                && body["ids"] == true
             {
                 return;
             }

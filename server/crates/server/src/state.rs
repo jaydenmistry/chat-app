@@ -6,10 +6,13 @@ use std::{
 };
 
 use redis::aio::ConnectionManager;
-use scylla::client::session::Session;
 use sqlx::PgPool;
+use storage::messages::MessageStore;
+use uuid::Uuid;
 
-use crate::{auth::password::PasswordHasher, config::Config, http::cookies::CookiePolicy};
+use crate::{
+    auth::password::PasswordHasher, config::Config, http::cookies::CookiePolicy, ids::IdGenerator,
+};
 
 /// Cloned for every request, so it is a single `Arc`: one atomic increment
 /// per clone, however many fields `Inner` grows.
@@ -22,7 +25,11 @@ pub struct Inner {
     /// Cloned per use: `ConnectionManager` needs `&mut self` to send a
     /// command, and clones share one multiplexed connection.
     pub redis: ConnectionManager,
-    pub scylla: Session,
+    /// Messages in Scylla; also owns the Scylla session.
+    pub messages: MessageStore,
+    pub ids: Arc<IdGenerator>,
+    /// Distinguishes this process in worker-ID leases and logs.
+    pub instance_id: Uuid,
     pub http: reqwest::Client,
     pub passwords: PasswordHasher,
     /// Secure `__Host-` cookies over HTTPS, plain ones on http://localhost.
