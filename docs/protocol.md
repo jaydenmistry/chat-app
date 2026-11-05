@@ -10,9 +10,8 @@ Every frame and body is defined once in Rust (`server/crates/protocol`) and
 generated as TypeScript (`web/src/protocol/generated`). This document
 describes behaviour; the types are the source of truth for shapes.
 
-Status: this is protocol `chat.v1` as of Phase 2. Phase 3 adds edits,
-deletes, reactions, read receipts and search; their frames are marked
-"Phase 3" below and are not served yet.
+Status: protocol `chat.v1` as of Phase 3: messaging, edits, deletes,
+reactions, read state and receipts, membership frames and search.
 
 ## Conventions
 
@@ -70,10 +69,10 @@ stays well inside Cloudflare's 100-second idle timeout.
 | `presence.set` | `state`: `active` or `idle` | `idle` after 5 minutes without input or while the tab is hidden |
 | `presence.watch` | `user_ids` (up to 200) | Replaces the set of users whose `presence` this socket receives |
 | `pong` | | The answer to `ping` |
-| `message.edit` | `req_id`, `room_id`, `message_id`, `content` | Phase 3 |
-| `message.delete` | `req_id`, `room_id`, `message_id` | Phase 3 |
-| `reaction.set` | `req_id`, `room_id`, `message_id`, `emoji`, `active` | Phase 3 |
-| `read.mark` | `room_id`, `message_id` | Phase 3 |
+| `message.edit` | `req_id`, `room_id`, `message_id`, `content` | Your own message only. Answered with `ok` or `error` |
+| `message.delete` | `req_id`, `room_id`, `message_id` | Your own message only. Answered with `ok` or `error` |
+| `reaction.set` | `req_id`, `room_id`, `message_id`, `emoji`, `active` | `emoji` from the allowlist (`REACTIONS` in `generated/reactions.ts`). Answered with `ok` or `error` |
+| `read.mark` | `room_id`, `message_id` | "I've read up to here." When the room is visible and scrolled to the bottom, at most every 2 s per room. No reply |
 
 `req_id` is chosen by the client (at most 64 characters) and echoed in the
 reply.
@@ -92,6 +91,13 @@ reply.
 | `room.joined` | `room` | You're in a new room (joined on another tab, accepted an invite, someone opened a DM with you). Live delivery for it is already on |
 | `room.left` | `room_id`, `reason`: `left`, `removed` or `deleted` | You're no longer in the room. Nothing more arrives for it |
 | `resync` | `reason` | This connection may have missed live messages. Run the sync procedure |
+| `ok` | `req_id` | An edit, delete or reaction was stored |
+| `message.updated` | `room_id`, `message_id`, `content`, `edited_at`, `version`, `change_id` | A message was edited. Apply only if `version` is higher than your copy's |
+| `message.deleted` | `room_id`, `message_id`, `version`, `change_id` | A message was deleted. Final: clear its content and reactions |
+| `reaction.updated` | `room_id`, `message_id`, `emoji`, `count`, `user_id`, `active`, `change_id` | `user_id` set (`active`) or removed a reaction; `count` is that emoji's total after the change. Of two for the same message and emoji, the higher `change_id` is newer |
+| `read.updated` | `room_id`, `user_id`, `message_id` | A read position moved forward: yours from another tab (clear the badge), or, in a DM only, the other person's (show "Seen") |
+| `member.joined` | `room_id`, `member` | Someone joined a room you're in |
+| `member.left` | `room_id`, `user_id` | Someone left or was removed from a room you're in |
 
 A `message`:
 
@@ -104,9 +110,15 @@ A `message`:
   "created_at": "2026-01-01T00:00:01Z",
   "edited_at": null,
   "deleted": false,
-  "version": 1767225601000000
+  "version": 1767225601000000,
+  "reactions": [{"emoji": "👍", "count": 2, "me": true}]
 }
 ```
+
+`version` is the microsecond write timestamp of the message's latest edit or
+delete (its creation time if never changed). `reactions` are as the caller
+sees them (`me`), in the allowlist's order. A deleted message has empty
+`content` and no reactions.
 
 ## Errors
 
@@ -114,8 +126,10 @@ A `message`:
 |---|---|---|
 | `bad_frame` | no | Not JSON, unknown `type`, or a missing field. `req_id` is null if the frame couldn't be read |
 | `invalid_content` | no | Empty, over 4096 bytes (UTF-8, after trimming), or contains control characters other than newline and tab |
-| `forbidden` | no | Not a member of the room, or your account (guest) or the room has expired |
+| `forbidden` | no | Not a member of the room, not the author (edit, delete), or your account (guest) or the room has expired |
 | `idempotency_conflict` | no | The key was already used for a different room or content. Generate a new key for new content |
+| `not_found` | no | Edit, delete or reaction on a message that doesn't exist, is deleted, or is before your history in the room |
+| `invalid_reaction` | no | The emoji isn't in the allowlist |
 | `unavailable` | yes | A dependency is down. Retry the same frame with the same key |
 | `internal` | yes | A bug on our side. Retry |
 
@@ -155,6 +169,36 @@ hours.
 The ack arrives before your own `message.created` copy. Both carry the same
 ID; keep one.
 
+## Edits, deletes and reactions
+
+These need no idempotency key: setting the same content, deleting twice and
+setting the same reaction state are no-ops, so a retry after a lost `ok` is
+safe. Give up after 10 s without an answer and let the user try again.
+
+The fan-out (`message.updated`, `message.deleted`, `reaction.updated`) can
+arrive before the `message.created` it applies to: the create's publish may
+be retried while the edit's goes straight through. Keep updates for unknown
+IDs for up to 60 s and apply them when the message arrives. If it never
+does, the next sync or history load has the current state.
+
+The server orders edits by write timestamp: an edit is written above the
+message's current version, so it wins over a replayed insert of the original
+and over any earlier edit, whichever instance handles it.
+
+## Read state
+
+Each member has a read position (`last_read_id`), which only moves forward.
+`GET /api/rooms` returns it with `unread` (others' messages after it, not
+deleted) and `unread_capped` (true means more than 99: show "99+"). While
+connected, count `message.created` from others in rooms you aren't viewing
+yourself.
+
+Receipts: in a DM, the other person's `read.updated` shows "Seen" under your
+latest message. In a group, reads are never pushed (each would go to every
+member); fetch `GET /api/rooms/<id>/receipts?message_id=<id>` for "Seen by
+N" (`count`, and the 20 most recent `readers`) when the room opens and on
+hover.
+
 ## The sync procedure
 
 Run it after every `hello` (first connection and every reconnect) and after
@@ -162,17 +206,29 @@ every `resync` frame:
 
 1. `GET /api/rooms` to refresh the room list.
 2. For every room with loaded messages, take the highest message ID you hold
-   and `POST /api/sync`:
+   and the room's change cursor, and `POST /api/sync`:
 
    ```json
-   {"rooms": [{"room_id": "…", "after": "111659093842698240"}]}
+   {"rooms": [{"room_id": "…", "after": "111659093842698240",
+               "changes_after": "111659093842690000"}]}
    ```
+
+   The change cursor is the `change_cursor` of the room's last history page
+   or sync (keep the earlier one when you load an older page).
 
 3. For each room in the response:
    - `member: false`: you left or were removed; drop the room.
    - `complete: false`: more than 500 messages were missed; discard the
      room's messages and load its latest page instead.
-   - Otherwise merge `messages` (oldest first) into the room.
+   - Otherwise merge `messages` (oldest first) and `changed` into the room,
+     and keep `change_cursor` for next time.
+
+`changed` holds the current state of messages at or before `after` that
+were edited, deleted or reacted to since `changes_after`, from a change
+feed kept for 7 days. It also holds a message whose send was acknowledged
+long after its ID was assigned (a retry of a slow first attempt), which
+could otherwise sit behind your resume point. A change cursor older than 7
+days, or more than 500 changes, comes back as `complete: false`.
 
 The response deliberately starts **5 seconds before** `after`, so it repeats
 messages you already have. A message can be stored slightly after one with a
@@ -184,15 +240,17 @@ place by ID, not at the bottom.
 Merge rules, everywhere messages arrive (history, sync, live):
 
 - Deduplicate by `id`.
-- Of two copies, keep the higher `version`.
+- Of two copies, keep the higher `version`; on a tie, the one that arrived
+  last (reactions change without changing the version).
 - A deleted copy always wins: never show content again once deleted.
 
 ## History
 
 `GET /api/rooms/<room_id>/messages?before=<message_id>&limit=50` returns up
 to `limit` (at most 100) messages older than `before`, newest first, plus
-`next_before`, the cursor for the next older page. Omit `before` for the
-latest page. `next_before: null` means the start of the room.
+`next_before`, the cursor for the next older page, and `change_cursor` (see
+the sync procedure). Omit `before` for the latest page. `next_before: null`
+means the start of the room.
 
 A page can be shorter than `limit` and still have a cursor: the server reads
 at most 32 hourly partitions per request, so a long run of empty hours (all
@@ -231,6 +289,18 @@ allowed `Origin`, which browsers send automatically. Errors are
 | `GET /api/users?ids=a,b` | Profiles, for message authors |
 | `GET /api/rooms/<id>/messages` | History (above) |
 | `POST /api/sync` | Sync (above) |
+| `GET /api/rooms/<id>/receipts?message_id=` | "Seen by N" for a message (see "Read state") |
+| `GET /api/search?q=&room_id=&before=` | Search (below) |
+
+### Search
+
+`GET /api/search?q=<words>` searches messages in rooms you're a member of,
+newest first, 20 per page; pass `next_before` back as `before` for more, and
+`room_id` to search one room. `q` is 1 to 200 characters, in web-search
+syntax (`"exact phrase"`, `-excluded`, `or`), with English stemming, so
+"foxes" finds "fox". New messages and edits take a few seconds to become
+searchable. Deleted messages never appear, and leaving a room removes its
+messages from your results at once.
 
 A room you can't see answers `404`, the same as one that doesn't exist, so
 private rooms can't be probed.
@@ -317,10 +387,34 @@ owner             instance A          instance B           bob (on A and B)
   |                 |  later messages in the room no longer reach bob
 ```
 
-### Edit and delete
+### Edit
 
-Phase 3. Edits and deletes will be `message.edit` and `message.delete`,
-answered with `ok` or `error`, fanned out as `message.updated` and
-`message.deleted` with a higher `version`, and recorded in a change feed
-that the sync procedure reads, so a reconnecting client also catches up on
-changes to messages it already has.
+```
+ada (instance A)        A                     Scylla             bob (instance B)
+  |-- message.edit ---->|                        |                      |
+  |                     | membership, read the message: exists, not    |
+  |                     | deleted, ada is the author                   |
+  |                     |-- room_changes row --->|                      |
+  |                     |-- UPDATE USING TIMESTAMP max(now, version+1) |
+  |<-------- ok --------|                        |                      |
+  |                     |-- PUBLISH room:<id> (via Redis) ------------->| message.updated
+  |<-- message.updated -|                        |                      |
+  |                     |-- XADD search:events (indexed a few s later) |
+```
+
+Delete is the same with `message.deleted`. A reaction is the same with
+`reaction.updated`, any member may do it, and the search index isn't
+touched.
+
+### Read receipt in a DM
+
+```
+bob (instance B)        B                 Postgres            ada (instance A)
+  |-- read.mark ------->|                     |                     |
+  |                     |-- UPDATE ... WHERE last_read_id < $3 ->|  |
+  |                     |   (moved forward)   |                     |
+  |                     |-- PUBLISH room:<dm> (via Redis) --------->| read.updated: "Seen"
+  |<-- read.updated ----|  (bob's other tabs clear their badge)     |
+```
+
+In a group room the `read.updated` goes to bob's own sockets only.

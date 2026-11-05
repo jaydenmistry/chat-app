@@ -56,6 +56,16 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 - Debug integration tests with `RUST_LOG=warn,scylla=error` to see server logs.
 - After a new session (dockerd restart) `chat-dev-pg` can lose its port mapping:
   `docker rm -f chat-dev-pg`, rerun it, then `sqlx migrate run --source migrations/postgres`.
+- The compose stack's Postgres and `chat-dev-pg` both bind :5432; stop one.
+- Building the image here: `docker build --build-arg REGISTRY=mirror.gcr.io
+  --secret id=proxy_ca,src=/root/.ccr/ca-bundle.crt -f deploy/Dockerfile -t chat-app:dev .`,
+  then `docker compose up -d --no-build`.
+- The compose `web` container can't install pnpm through the sandbox proxy:
+  stop it and run `pnpm dev` on the host (it proxies to Traefik on :8080).
+- Playwright here: `CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --project=chromium`
+  (only Chromium is installed). Reset the stack (`docker compose down -v`) after
+  many runs: the public directory lists the top 100 rooms, so old test rooms
+  crowd out new ones.
 
 ## Status
 

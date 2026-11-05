@@ -856,7 +856,10 @@ copied into a second database. The query must sort every match, so a very
 common word over a large index gets slow. I'll measure it. A RUM index or
 option B are the documented upgrade paths. Indexing runs on all instances
 through a consumer group (`XREADGROUP`), stale pending entries are reclaimed
-with `XAUTOCLAIM`, and an `index_lag_seconds` metric shows the delay. A
+with `XAUTOCLAIM`, and an `index_lag_seconds` metric shows the delay. The
+stream is capped at about 100,000 entries (`XADD MAXLEN ~`), so stopped
+indexers can't grow it without bound; entries trimmed before they were
+indexed are recovered by a reindex. A
 `server reindex --room <id>` command rebuilds a room from Scylla by walking
 `room_buckets`.
 
@@ -1476,17 +1479,21 @@ resume (6.4), presence and typing (6.6); session revocation closing sockets
 (7); per-frame authorization (8); guest message TTLs (11.3); and the React
 client for all of it.
 
+**Phase 3:** edits, deletes and reactions (6.5) with the `room_changes`
+feed read by sync (6.4), including the late-insert row (16.1); read state,
+unread counts and receipts (9); `member.joined` and `member.left` frames;
+search (10): the stream entry inside the send script, the indexer consumer
+group on every instance, and the endpoint with Scylla hydration; and the
+client for all of it.
+
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Edits, deletes, reactions, and the `room_changes` feed read by sync | 6.4, 6.5 | 3 |
-| The "late insert" change row for acks of IDs older than `W / 2` | 16.1 | 3 |
-| `XADD` to the search stream inside the send script | 6.1, 10 | 3 |
-| Read state, unread counts, receipts, and the `(room_id, last_read_id)` index | 9 | 3 |
-| Rate limits inside the send script; sign-up, login and connection caps | 6.1, 6.3, 11.1 | 4 |
+| Rate limits inside the send script and on edits, deletes and reactions; sign-up, login and connection caps | 6.1, 6.3, 6.5, 11.1 | 4 |
 | Room and membership caps | 11.2 | 4 |
 | Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
-| Metrics | 13 | 4 |
+| Metrics, including `index_lag_seconds` | 10, 13 | 4 |
+| `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |
 | Reclaiming Scylla space of deleted rooms | 4.2 | 4 |
