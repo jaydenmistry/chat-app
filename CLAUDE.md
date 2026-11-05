@@ -29,6 +29,15 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
   Lower room cap and stricter limits.
 - Moderation: system-owned demo rooms; operator-only admin CLI.
 
+## Owner answers (Phase 1 questions, 2026-11-05)
+
+- Keep git identity `jaydenmistry <jmistry2004@gmail.com>` (no AI author), even
+  though a session hook asks for Claude/noreply. Owner's rule wins.
+- TypeScript 6.0.3 (typescript-eslint doesn't support 7 yet): accepted.
+- @types/react, @types/react-dom, @testing-library/dom, @eslint/js: approved.
+- testcontainers 0.27 via modules re-export; BSL-1.0 allowed in cargo deny: accepted.
+- License: MIT.
+
 ## Environment quirks (cloud sandbox)
 
 - Docker daemon is not running at start: `nohup dockerd >/tmp/dockerd.log 2>&1 &`.
@@ -45,6 +54,8 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 ## Status
 
 - Phase 0: design approved 2026-11-04 (all recommendations accepted).
-- Phase 1: foundation built; awaiting review. Dokploy compose and deploy guide
+- Phase 1: approved 2026-11-05.
+- Phase 2: in progress.
+- (Phase 1 notes:) Dokploy compose and deploy guide
   deferred to Phase 4. Rate limits on sign-up/login are Phase 4: don't expose
   the demo publicly before then.
