@@ -54,6 +54,8 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
   `docker builder prune -af`, `docker volume prune -af`, and removing
   `server/target/debug/incremental`.
 - Debug integration tests with `RUST_LOG=warn,scylla=error` to see server logs.
+- After a new session (dockerd restart) `chat-dev-pg` can lose its port mapping:
+  `docker rm -f chat-dev-pg`, rerun it, then `sqlx migrate run --source migrations/postgres`.
 
 ## Status
 
