@@ -715,6 +715,22 @@ mod tests {
         assert_eq!(seen, [msg(10, 0).id, msg(1, 0).id]);
     }
 
+    /// The newest hours are all expired (a room whose recent messages were
+    /// guests'); older history must still be reachable from the first page.
+    #[tokio::test]
+    async fn empty_newest_buckets_dont_hide_older_history() {
+        let mut fake = Fake::default();
+        fake.add(msg(1, 0));
+        fake.add(msg(1, 1));
+        for hour in 2..6 {
+            fake.expire_bucket(hour);
+        }
+        let first = page_back(&fake, ROOM, None, no_floor(), 50).await.unwrap();
+        let ids: Vec<_> = first.messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [msg(1, 1).id, msg(1, 0).id]);
+        assert_eq!(first.next_before, None);
+    }
+
     #[tokio::test]
     async fn long_runs_of_empty_buckets_return_a_cursor_not_a_huge_scan() {
         let mut fake = Fake::default();

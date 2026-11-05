@@ -132,6 +132,19 @@ impl Infra {
         }
     }
 
+    /// A Redis of its own, for tests that pause or stop it: the shared one
+    /// must stay up for every other test.
+    pub async fn dedicated_redis(&self) -> (ContainerAsync<Redis>, String) {
+        let container = Redis::default()
+            .with_name(format!("{}/library/redis", registry()))
+            .with_tag(REDIS_TAG)
+            .start()
+            .await
+            .expect("starting a dedicated redis");
+        let port = container.get_host_port_ipv4(6379).await.unwrap();
+        (container, format!("redis://127.0.0.1:{port}"))
+    }
+
     /// A new, migrated database for one test.
     pub async fn fresh_database(&self) -> String {
         let name = format!(

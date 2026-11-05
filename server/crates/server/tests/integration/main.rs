@@ -14,6 +14,7 @@
 
 mod app;
 mod auth;
+mod failures;
 mod github;
 mod health;
 mod ids;
@@ -69,6 +70,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     realtime::typing_crosses_instances,
     realtime::presence_crosses_instances,
     realtime::guest_expiry_ends_the_socket_and_the_messages,
+    failures::redis_outage_then_resync,
+    failures::instance_restart_loses_nothing,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

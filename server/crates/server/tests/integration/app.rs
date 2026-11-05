@@ -143,6 +143,18 @@ impl TestApp {
     }
 }
 
+impl TestApp {
+    /// Shuts the server down the way SIGTERM does, and waits for it.
+    pub async fn stop(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), task).await;
+        }
+    }
+}
+
 impl Drop for TestApp {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
