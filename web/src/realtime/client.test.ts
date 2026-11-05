@@ -219,4 +219,43 @@ describe("RealtimeClient", () => {
     latest().serverSend(hello);
     expect(latest().sentOfType("presence.watch")[0]).toMatchObject({ user_ids: ["a", "b"] });
   });
+
+  it("answers edits, deletes and reactions with their own reply", async () => {
+    const c = client();
+    expect(await c.editMessage("room", "5", "x")).toMatchObject({ ok: false, code: "offline" });
+    latest().serverSend(hello);
+
+    const edited = c.editMessage("room", "5", "fixed");
+    const reacted = c.setReaction("room", "5", "👍", true);
+    const [edit] = latest().sentOfType("message.edit");
+    const [react] = latest().sentOfType("reaction.set");
+    expect(edit).toMatchObject({ room_id: "room", message_id: "5", content: "fixed" });
+    expect(react).toMatchObject({ emoji: "👍", active: true });
+    // Replies can come in any order; each settles its own request.
+    latest().serverSend({ type: "error", req_id: must(react).req_id as string, code: "not_found", message: "no such message" });
+    latest().serverSend({ type: "ok", req_id: must(edit).req_id as string });
+    expect(await edited).toEqual({ ok: true });
+    expect(await reacted).toEqual({ ok: false, code: "not_found", message: "no such message" });
+  });
+
+  it("settles open requests when the connection drops or the server is silent", async () => {
+    const c = client();
+    latest().serverSend(hello);
+    const dropped = c.deleteMessage("room", "5");
+    latest().serverClose(1006);
+    expect(await dropped).toMatchObject({ ok: false, code: "offline" });
+
+    vi.advanceTimersByTime(1000);
+    latest().serverSend(hello);
+    const silent = c.deleteMessage("room", "5");
+    vi.advanceTimersByTime(10_000);
+    expect(await silent).toMatchObject({ ok: false, code: "timeout" });
+  });
+
+  it("sends read marks without waiting for a reply", () => {
+    const c = client();
+    latest().serverSend(hello);
+    c.markRead("room", "9");
+    expect(latest().sentOfType("read.mark")).toEqual([{ type: "read.mark", room_id: "room", message_id: "9" }]);
+  });
 });

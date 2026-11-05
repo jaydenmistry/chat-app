@@ -10,7 +10,9 @@ import type { LoginRequest } from "./protocol/generated/LoginRequest";
 import type { Me } from "./protocol/generated/Me";
 import type { Member } from "./protocol/generated/Member";
 import type { PublicRoom } from "./protocol/generated/PublicRoom";
+import type { Receipts } from "./protocol/generated/Receipts";
 import type { RoomInfo } from "./protocol/generated/RoomInfo";
+import type { SearchResults } from "./protocol/generated/SearchResults";
 import type { SessionInfo } from "./protocol/generated/SessionInfo";
 import type { SignupRequest } from "./protocol/generated/SignupRequest";
 import type { SyncCursor } from "./protocol/generated/SyncCursor";
@@ -90,6 +92,14 @@ export const api = {
   history: (roomId: string, before?: string) =>
     request<HistoryPage>("GET", `/rooms/${roomId}/messages${before ? `?before=${before}` : ""}`),
   sync: (rooms: SyncCursor[]) => request<SyncResponse>("POST", "/sync", { rooms }),
+  receipts: (roomId: string, messageId: string) =>
+    request<Receipts>("GET", `/rooms/${roomId}/receipts?message_id=${messageId}`),
+  search: (q: string, options: { roomId?: string; before?: string } = {}) => {
+    const params = new URLSearchParams({ q });
+    if (options.roomId) params.set("room_id", options.roomId);
+    if (options.before) params.set("before", options.before);
+    return request<SearchResults>("GET", `/search?${params.toString()}`);
+  },
 };
 
 /** Where the browser goes to start GitHub sign-in (a full-page redirect). */

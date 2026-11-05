@@ -3,8 +3,10 @@ import { Account } from "../Account";
 import { ApiRequestError, api } from "../api";
 import type { Me } from "../protocol/generated/Me";
 import type { PublicRoom } from "../protocol/generated/PublicRoom";
+import type { Message } from "../protocol/generated/Message";
 import type { RoomInfo } from "../protocol/generated/RoomInfo";
 import { RoomView } from "./RoomView";
+import { type ChatState, unreadLabel } from "./state";
 import { PresenceDot, roomLabel } from "./ui";
 import { useChat } from "./useChat";
 
@@ -14,6 +16,8 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const { state, members, actions } = useChat(me, onSignedOut);
   const [dialog, setDialog] = useState<Dialog>("none");
   const [showAccount, setShowAccount] = useState(false);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState<string | null>(null);
 
   if (showAccount) {
     return (
@@ -38,10 +42,36 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
           <ConnectionPill state={state.connection} />
         </div>
 
+        <form
+          className="search-box"
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (query.trim() !== "") setSearching(query.trim());
+          }}
+        >
+          <input
+            type="search"
+            aria-label="Search messages"
+            placeholder="Search messages"
+            value={query}
+            maxLength={200}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </form>
+
         <nav>
           <SidebarSection title="Rooms">
             {rooms.map((room) => (
-              <RoomButton key={room.id} room={room} active={room.id === state.activeRoomId} onSelect={actions.select} />
+              <RoomButton
+                key={room.id}
+                room={room}
+                active={!searching && room.id === state.activeRoomId}
+                onSelect={(id) => {
+                  setSearching(null);
+                  actions.select(id);
+                }}
+              />
             ))}
           </SidebarSection>
           <div className="sidebar-actions">
@@ -56,7 +86,15 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
           </div>
           <SidebarSection title="Direct messages">
             {dms.map((room) => (
-              <RoomButton key={room.id} room={room} active={room.id === state.activeRoomId} onSelect={actions.select}>
+              <RoomButton
+                key={room.id}
+                room={room}
+                active={!searching && room.id === state.activeRoomId}
+                onSelect={(id) => {
+                  setSearching(null);
+                  actions.select(id);
+                }}
+              >
                 <PresenceDot status={room.dm_peer ? state.presence[room.dm_peer.id] : undefined} />
               </RoomButton>
             ))}
@@ -85,7 +123,19 @@ export function ChatApp({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
             </button>
           </div>
         )}
-        {active ? (
+        {searching ? (
+          <SearchPanel
+            key={searching}
+            query={searching}
+            state={state}
+            actions={actions}
+            onOpen={(roomId) => {
+              setSearching(null);
+              actions.select(roomId);
+            }}
+            onClose={() => setSearching(null)}
+          />
+        ) : active ? (
           <RoomView key={active.id} me={me} room={active} state={state} members={members} actions={actions} />
         ) : (
           <div className="empty">
@@ -143,6 +193,11 @@ function RoomButton({
       >
         {children}
         <span className="room-name">{roomLabel(room)}</span>
+        {unreadLabel(room) && (
+          <span className="unread" aria-label={`${unreadLabel(room)} unread`}>
+            {unreadLabel(room)}
+          </span>
+        )}
       </button>
     </li>
   );
@@ -281,5 +336,95 @@ function NewDmDialog({ onClose, onOpened }: { onClose: () => void; onOpened: (ro
         </button>
       </form>
     </Modal>
+  );
+}
+
+type Actions = ReturnType<typeof useChat>["actions"];
+
+/** Search results, newest first, across the caller's rooms. */
+function SearchPanel({
+  query,
+  state,
+  actions,
+  onOpen,
+  onClose,
+}: {
+  query: string;
+  state: ChatState;
+  actions: Actions;
+  onOpen: (roomId: string) => void;
+  onClose: () => void;
+}) {
+  const [results, setResults] = useState<Message[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (before?: string) => {
+    try {
+      const page = await actions.search(query, before);
+      actions.knowAuthors(page.messages);
+      setResults((prev) => [...(before ? (prev ?? []) : []), ...page.messages]);
+      setNext(page.next_before);
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.body.message : String(err));
+    }
+  };
+  useEffect(() => {
+    let cancelled = false;
+    actions.search(query).then(
+      (page) => {
+        if (cancelled) return;
+        actions.knowAuthors(page.messages);
+        setResults(page.messages);
+        setNext(page.next_before);
+      },
+      (err: unknown) => {
+        if (!cancelled) setError(err instanceof ApiRequestError ? err.body.message : String(err));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [query, actions]);
+
+  const roomName = (id: string) => {
+    const room = state.rooms.find((r) => r.id === id);
+    return room ? roomLabel(room) : "a room you left";
+  };
+
+  return (
+    <div className="search-panel" aria-label="Search results">
+      <header className="room-head">
+        <h1>Results for “{query}”</h1>
+        <button type="button" className="secondary small" onClick={onClose}>
+          Close
+        </button>
+      </header>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {results === null && !error && <p className="hint">Searching…</p>}
+      {results?.length === 0 && <p className="hint">No messages match. New messages take a few seconds to show up.</p>}
+      <ul className="results">
+        {results?.map((m) => (
+          <li key={m.id}>
+            <button type="button" className="result" onClick={() => onOpen(m.room_id)}>
+              <span className="hint">
+                {roomName(m.room_id)} · {state.profiles[m.author_id]?.display_name ?? "Someone"} ·{" "}
+                {new Date(m.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
+              </span>
+              <span className="content">{m.content}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {next && (
+        <button type="button" className="link" onClick={() => void load(next)}>
+          More results
+        </button>
+      )}
+    </div>
   );
 }

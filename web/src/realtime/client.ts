@@ -10,6 +10,7 @@
 // live delivery.
 
 import type { ClientFrame } from "../protocol/generated/ClientFrame";
+import type { FrameErrorCode } from "../protocol/generated/FrameErrorCode";
 import type { Message } from "../protocol/generated/Message";
 import type { PresenceState } from "../protocol/generated/PresenceState";
 import type { ServerFrame } from "../protocol/generated/ServerFrame";
@@ -27,6 +28,14 @@ export interface PendingSend {
   status: "sending" | "failed";
   error?: string;
 }
+
+/**
+ * The answer to an edit, delete or reaction. These are idempotent, so after
+ * `offline` or `timeout` (applied or not, nobody knows) trying again is safe.
+ */
+export type CallResult =
+  | { ok: true }
+  | { ok: false; code: FrameErrorCode | "offline" | "timeout"; message: string };
 
 export interface RealtimeHandlers {
   state?: (state: ConnectionState) => void;
@@ -74,6 +83,8 @@ export class RealtimeClient {
   private readonly ackTimers = new Map<string, Timer>();
   /** req_id -> idempotency key, for matching replies. */
   private readonly requests = new Map<string, string>();
+  /** req_id -> the caller waiting for `ok` or an error. */
+  private readonly calls = new Map<string, { resolve: (result: CallResult) => void; timer: Timer }>();
   private watched: string[] = [];
   private presence: PresenceState = "active";
 
@@ -149,6 +160,55 @@ export class RealtimeClient {
     this.clearAckTimer(key);
   }
 
+  editMessage(roomId: string, messageId: string, content: string): Promise<CallResult> {
+    return this.call((req_id) => ({ type: "message.edit", req_id, room_id: roomId, message_id: messageId, content }));
+  }
+
+  deleteMessage(roomId: string, messageId: string): Promise<CallResult> {
+    return this.call((req_id) => ({ type: "message.delete", req_id, room_id: roomId, message_id: messageId }));
+  }
+
+  setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CallResult> {
+    return this.call((req_id) => ({
+      type: "reaction.set",
+      req_id,
+      room_id: roomId,
+      message_id: messageId,
+      emoji,
+      active,
+    }));
+  }
+
+  /** No reply; a lost mark is covered by the next one. */
+  markRead(roomId: string, messageId: string): void {
+    this.sendFrame({ type: "read.mark", room_id: roomId, message_id: messageId });
+  }
+
+  private call(build: (reqId: string) => ClientFrame): Promise<CallResult> {
+    if (!this.live) {
+      return Promise.resolve({ ok: false, code: "offline", message: "not connected" });
+    }
+    this.nextReq += 1;
+    const reqId = `c${this.nextReq}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.calls.delete(reqId);
+        resolve({ ok: false, code: "timeout", message: "no answer from the server" });
+      }, this.options.ackTimeoutMs);
+      this.calls.set(reqId, { resolve, timer });
+      this.sendFrame(build(reqId));
+    });
+  }
+
+  private settle(reqId: string, result: CallResult): boolean {
+    const call = this.calls.get(reqId);
+    if (!call) return false;
+    clearTimeout(call.timer);
+    this.calls.delete(reqId);
+    call.resolve(result);
+    return true;
+  }
+
   typing(roomId: string): void {
     this.sendFrame({ type: "typing", room_id: roomId });
   }
@@ -216,7 +276,13 @@ export class RealtimeClient {
         }
         return;
       }
+      case "ok":
+        this.settle(frame.req_id, { ok: true });
+        return;
       case "error": {
+        if (frame.req_id && this.settle(frame.req_id, { ok: false, code: frame.code, message: frame.message })) {
+          return;
+        }
         const key = frame.req_id ? this.requests.get(frame.req_id) : undefined;
         if (frame.req_id) this.requests.delete(frame.req_id);
         if (!key || !this.pending.has(key)) {
@@ -267,6 +333,10 @@ export class RealtimeClient {
     this.live = false;
     this.socket = null;
     this.clearTimers();
+    // Whether these were applied is unknown; the caller may try again.
+    for (const reqId of [...this.calls.keys()]) {
+      this.settle(reqId, { ok: false, code: "offline", message: "the connection dropped" });
+    }
     if (this.stopped) return;
     if (code === CLOSE_SESSION_ENDED) {
       this.setState("ended");

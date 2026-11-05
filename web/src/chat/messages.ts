@@ -17,12 +17,15 @@ export function compareIds(a: string, b: string): number {
 }
 
 /**
- * Of two copies of the same message, the one to keep. A deleted copy always
- * wins: once deleted, nothing that arrives later can bring the content back.
+ * Of two copies of the same message (`a` held, `b` arriving), the one to
+ * keep. A deleted copy always wins: once deleted, nothing that arrives later
+ * can bring the content back. Otherwise the higher version wins, and on a
+ * tie the arriving copy: reactions change without changing the version, so
+ * a fresher copy of the same version may carry newer reactions.
  */
 export function newerCopy(a: Message, b: Message): Message {
   if (a.deleted !== b.deleted) return a.deleted ? a : b;
-  return b.version > a.version ? b : a;
+  return b.version >= a.version ? b : a;
 }
 
 /** Returns a new list, oldest first, with `incoming` merged in. */

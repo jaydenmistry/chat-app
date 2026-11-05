@@ -2,10 +2,13 @@ import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from
 import { ApiRequestError, api } from "../api";
 import type { Member } from "../protocol/generated/Member";
 import type { Me } from "../protocol/generated/Me";
+import type { Message } from "../protocol/generated/Message";
 import type { RoomInfo } from "../protocol/generated/RoomInfo";
-import type { PendingSend } from "../realtime/client";
+import { REACTIONS } from "../protocol/generated/reactions";
+import type { CallResult, PendingSend } from "../realtime/client";
+import { compareIds } from "./messages";
 import { PresenceDot, roomLabel } from "./ui";
-import { type ChatState, typers, visibleMessages } from "./state";
+import { type ChatState, myLatest, typers, visibleMessages } from "./state";
 import type { useChat } from "./useChat";
 
 type Actions = ReturnType<typeof useChat>["actions"];
@@ -35,6 +38,7 @@ export function RoomView({
   const name = (id: string) => state.profiles[id]?.display_name ?? "Someone";
   const typing = typers(state, room.id, me.id, state.clock);
   const isOwner = room.role === "owner";
+  const seen = useSeen(room, state, actions);
 
   const run = async (action: () => Promise<unknown>) => {
     setError(null);
@@ -123,6 +127,8 @@ export function RoomView({
           hasOlder={olderCursor !== null}
           name={name}
           meId={me.id}
+          lastReadId={room.last_read_id}
+          seen={seen}
           actions={actions}
         />
         {showMembers && (
@@ -166,6 +172,52 @@ export function RoomView({
   );
 }
 
+/** "Seen" (DM) or "Seen by N" (group) for the caller's latest message. */
+interface SeenInfo {
+  messageId: string;
+  /** Null while nobody has read it (yet, as far as this tab knows). */
+  label: string | null;
+  names: string;
+  refresh: () => void;
+}
+
+function useSeen(room: RoomInfo, state: ChatState, actions: Actions): SeenInfo | null {
+  const latest = myLatest(state, room.id);
+  const latestId = latest?.id ?? null;
+  const [receipt, setReceipt] = useState<{ messageId: string; count: number; names: string } | null>(null);
+  const [asked, setAsked] = useState(0);
+
+  // Fetched on demand: when the latest message changes, when the room opens,
+  // and on hover. Group reads are never pushed (docs/design.md 9).
+  useEffect(() => {
+    if (!latestId) return;
+    let cancelled = false;
+    actions.receipts(room.id, latestId).then(
+      (r) => {
+        if (!cancelled) {
+          setReceipt({ messageId: latestId, count: r.count, names: r.readers.map((u) => u.display_name).join(", ") });
+        }
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [room.id, latestId, asked, actions]);
+
+  if (!latestId) return null;
+  const refresh = () => setAsked((n) => n + 1);
+  const fetched = receipt?.messageId === latestId ? receipt : null;
+  if (room.kind === "dm") {
+    const peer = state.peerRead[room.id];
+    const live = peer !== undefined && compareIds(peer, latestId) >= 0;
+    const label = live || (fetched && fetched.count > 0) ? "Seen" : null;
+    return { messageId: latestId, label, names: "", refresh };
+  }
+  const label = fetched && fetched.count > 0 ? `Seen by ${fetched.count}` : null;
+  return { messageId: latestId, label, names: fetched?.names ?? "", refresh };
+}
+
 function MessageList({
   roomId,
   items,
@@ -174,6 +226,8 @@ function MessageList({
   hasOlder,
   name,
   meId,
+  lastReadId,
+  seen,
   actions,
 }: {
   roomId: string;
@@ -183,11 +237,14 @@ function MessageList({
   hasOlder: boolean;
   name: (id: string) => string;
   meId: string;
+  lastReadId: string;
+  seen: SeenInfo | null;
   actions: Actions;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const newestId = items.at(-1)?.id ?? null;
 
   // Follow new messages only if the reader is already at the bottom.
   useLayoutEffect(() => {
@@ -199,9 +256,31 @@ function MessageList({
     stickToBottom.current = true;
   }, [roomId]);
 
+  // Read up to the newest message while it's on screen: the tab is visible
+  // and the list is scrolled to the bottom.
+  const markIfRead = () => {
+    if (!newestId || !stickToBottom.current || document.visibilityState !== "visible") return;
+    if (compareIds(newestId, lastReadId) > 0) actions.markRead(roomId, newestId);
+  };
+  const markRef = useRef(markIfRead);
+  useEffect(() => {
+    markRef.current = markIfRead;
+  });
+  useEffect(() => {
+    markRef.current();
+  }, [newestId, lastReadId]);
+  useEffect(() => {
+    const onVisible = () => markRef.current();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   const onScroll = () => {
     const el = scroller.current;
-    if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    stickToBottom.current = atBottom;
+    if (atBottom) markIfRead();
   };
 
   const loadOlder = async () => {
@@ -230,22 +309,14 @@ function MessageList({
         <p className="hint centered-text">No messages yet. Say hello.</p>
       )}
       {items.map((m) => (
-        <article key={m.id} className={`message${m.author_id === meId ? " mine" : ""}`} data-message-id={m.id}>
-          <header>
-            <strong>{name(m.author_id)}</strong>{" "}
-            <time dateTime={m.created_at} className="hint">
-              {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </time>
-            {m.edited_at && <span className="hint"> (edited)</span>}
-          </header>
-          {m.deleted ? (
-            <p className="content deleted">Message deleted</p>
-          ) : (
-            // Plain text only: React escapes it, and bidi isolation keeps
-            // direction-override characters from reordering the page.
-            <p className="content">{m.content}</p>
-          )}
-        </article>
+        <MessageItem
+          key={m.id}
+          message={m}
+          mine={m.author_id === meId}
+          name={name}
+          seen={seen?.messageId === m.id ? seen : null}
+          actions={actions}
+        />
       ))}
       {pending.map((p) => (
         <article key={p.key} className="message mine pending" aria-busy={p.status === "sending"}>
@@ -267,6 +338,184 @@ function MessageList({
         </article>
       ))}
     </div>
+  );
+}
+
+function failure(result: CallResult): string | null {
+  if (result.ok) return null;
+  return result.code === "offline" || result.code === "timeout"
+    ? "Couldn't reach the server. Try again."
+    : result.message;
+}
+
+function MessageItem({
+  message: m,
+  mine,
+  name,
+  seen,
+  actions,
+}: {
+  message: Message;
+  mine: boolean;
+  name: (id: string) => string;
+  seen: SeenInfo | null;
+  actions: Actions;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.content);
+  const [picking, setPicking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (call: () => Promise<CallResult>, onDone?: () => void) => {
+    setBusy(true);
+    setError(null);
+    const message = failure(await call());
+    setBusy(false);
+    if (message) setError(message);
+    else onDone?.();
+  };
+
+  const saveEdit = () => {
+    const content = draft.trim();
+    if (content === "" || new TextEncoder().encode(content).length > MAX_CONTENT_BYTES) return;
+    if (content === m.content) {
+      setEditing(false);
+      return;
+    }
+    void run(
+      () => actions.edit(m.room_id, m.id, content),
+      () => setEditing(false),
+    );
+  };
+
+  const onEditKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape") {
+      setEditing(false);
+    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      saveEdit();
+    }
+  };
+
+  const toggle = (emoji: string, active: boolean) => {
+    setPicking(false);
+    void run(() => actions.react(m.room_id, m.id, emoji, active));
+  };
+
+  return (
+    // Hovering your latest message refreshes who has seen it.
+    <article className={`message${mine ? " mine" : ""}`} data-message-id={m.id} onMouseEnter={seen?.refresh}>
+      <header>
+        <strong>{name(m.author_id)}</strong>{" "}
+        <time dateTime={m.created_at} className="hint">
+          {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        </time>
+        {m.edited_at && !m.deleted && <span className="hint"> (edited)</span>}
+        {!m.deleted && !editing && (
+          <span className="message-actions">
+            <button
+              type="button"
+              className="link small"
+              aria-label="Add reaction"
+              aria-expanded={picking}
+              onClick={() => setPicking(!picking)}
+            >
+              React
+            </button>
+            {mine && (
+              <>
+                <button
+                  type="button"
+                  className="link small"
+                  onClick={() => {
+                    setDraft(m.content);
+                    setEditing(true);
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="link small"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm("Delete this message?")) void run(() => actions.remove(m.room_id, m.id));
+                  }}
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </span>
+        )}
+      </header>
+      {m.deleted ? (
+        <p className="content deleted">Message deleted</p>
+      ) : editing ? (
+        <div className="edit">
+          <textarea
+            aria-label="Edit message"
+            value={draft}
+            rows={2}
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onEditKey}
+          />
+          <div className="edit-actions">
+            <button type="button" className="small" disabled={busy || draft.trim() === ""} onClick={saveEdit}>
+              Save
+            </button>
+            <button type="button" className="secondary small" onClick={() => setEditing(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        // Plain text only: React escapes it, and bidi isolation keeps
+        // direction-override characters from reordering the page.
+        <p className="content">{m.content}</p>
+      )}
+      {picking && (
+        <div className="picker" role="group" aria-label="Reactions">
+          {REACTIONS.map((emoji) => {
+            const mineAlready = m.reactions.some((r) => r.emoji === emoji && r.me);
+            return (
+              <button key={emoji} type="button" className="emoji" onClick={() => toggle(emoji, !mineAlready)}>
+                {emoji}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {m.reactions.length > 0 && (
+        <div className="reactions">
+          {m.reactions.map((r) => (
+            <button
+              key={r.emoji}
+              type="button"
+              className={`reaction${r.me ? " me" : ""}`}
+              aria-pressed={r.me}
+              aria-label={`${r.emoji} ${r.count}`}
+              disabled={busy}
+              onClick={() => toggle(r.emoji, !r.me)}
+            >
+              {r.emoji} <span>{r.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {error && (
+        <p className="error small-text" role="alert">
+          {error}
+        </p>
+      )}
+      {seen?.label && (
+        <p className="seen hint" title={seen.names || undefined}>
+          {seen.label}
+        </p>
+      )}
+    </article>
   );
 }
 

@@ -7,16 +7,29 @@ import type { Me } from "../protocol/generated/Me";
 import type { Message } from "../protocol/generated/Message";
 import type { RoomInfo } from "../protocol/generated/RoomInfo";
 import type { ServerFrame } from "../protocol/generated/ServerFrame";
-import { RealtimeClient, socketUrl } from "../realtime/client";
+import { type CallResult, RealtimeClient, socketUrl } from "../realtime/client";
+import { compareIds } from "./messages";
 import { initialState, reducer, syncCursors, unknownAuthors } from "./state";
 
 /** Typing events go out at most this often while the user types. */
 const TYPING_EVERY_MS = 3_000;
 /** No input for this long (or a hidden tab) reports the user as away. */
 const IDLE_AFTER_MS = 5 * 60_000;
+/** Read marks go out at most this often per room (docs/design.md 9). */
+const READ_MARK_EVERY_MS = 2_000;
+
+interface ReadMarkTimer {
+  last: number;
+  latest: string;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+function offline(): Promise<CallResult> {
+  return Promise.resolve({ ok: false, code: "offline", message: "not connected" });
+}
 
 export function useChat(me: Me, onSessionEnded: () => void) {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(reducer, me.id, initialState);
   const [membersByRoom, setMembersByRoom] = useState<Record<string, Member[]>>({});
   const membersRef = useRef(membersByRoom);
   useEffect(() => {
@@ -30,6 +43,7 @@ export function useChat(me: Me, onSessionEnded: () => void) {
   });
   const clientRef = useRef<RealtimeClient | null>(null);
   const lastTyping = useRef<Record<string, number>>({});
+  const readMarks = useRef<Record<string, ReadMarkTimer>>({});
 
   const ensureUsers = useCallback((userIds: string[]) => {
     const ids = [...new Set(userIds)].filter((id) => !stateRef.current.profiles[id]);
@@ -74,8 +88,14 @@ export function useChat(me: Me, onSessionEnded: () => void) {
           dispatch({ type: "history", roomId: room.room_id, page, replace: true });
           ensureProfiles(page.messages);
         } else {
-          dispatch({ type: "messages", roomId: room.room_id, messages: room.messages });
-          ensureProfiles(room.messages);
+          dispatch({
+            type: "synced",
+            roomId: room.room_id,
+            messages: room.messages,
+            changed: room.changed,
+            changeCursor: room.change_cursor,
+          });
+          ensureProfiles([...room.messages, ...room.changed]);
         }
       }
     } catch {
@@ -86,10 +106,74 @@ export function useChat(me: Me, onSessionEnded: () => void) {
   const handleFrame = useCallback(
     (frame: ServerFrame) => {
       switch (frame.type) {
-        case "message.created":
-          dispatch({ type: "messages", roomId: frame.message.room_id, messages: [frame.message] });
+        case "message.created": {
+          const viewing =
+            frame.message.room_id === stateRef.current.activeRoomId && document.visibilityState === "visible";
+          dispatch({ type: "created", message: frame.message, viewing });
           ensureProfiles([frame.message]);
           refreshIfStranger(frame.message.room_id, frame.message.author_id);
+          break;
+        }
+        case "message.updated":
+          dispatch({
+            type: "change",
+            roomId: frame.room_id,
+            now: Date.now(),
+            change: {
+              kind: "updated",
+              messageId: frame.message_id,
+              content: frame.content,
+              editedAt: frame.edited_at,
+              version: frame.version,
+            },
+          });
+          break;
+        case "message.deleted":
+          dispatch({
+            type: "change",
+            roomId: frame.room_id,
+            now: Date.now(),
+            change: { kind: "deleted", messageId: frame.message_id, version: frame.version },
+          });
+          break;
+        case "reaction.updated":
+          dispatch({
+            type: "change",
+            roomId: frame.room_id,
+            now: Date.now(),
+            change: {
+              kind: "reaction",
+              messageId: frame.message_id,
+              emoji: frame.emoji,
+              count: frame.count,
+              userId: frame.user_id,
+              active: frame.active,
+              changeId: frame.change_id,
+            },
+          });
+          break;
+        case "read.updated":
+          // Our own read from another tab, or the other person's in a DM.
+          dispatch(
+            frame.user_id === me.id
+              ? { type: "read", roomId: frame.room_id, messageId: frame.message_id }
+              : { type: "peerRead", roomId: frame.room_id, messageId: frame.message_id },
+          );
+          break;
+        case "member.joined":
+          setMembersByRoom((all) => {
+            const list = all[frame.room_id];
+            if (!list || list.some((m) => m.user.id === frame.member.user.id)) return all;
+            return { ...all, [frame.room_id]: [...list, frame.member] };
+          });
+          dispatch({ type: "profiles", profiles: [frame.member.user] });
+          break;
+        case "member.left":
+          setMembersByRoom((all) => {
+            const list = all[frame.room_id];
+            if (!list) return all;
+            return { ...all, [frame.room_id]: list.filter((m) => m.user.id !== frame.user_id) };
+          });
           break;
         case "typing":
           dispatch({ type: "typing", roomId: frame.room_id, userId: frame.user_id, now: Date.now() });
@@ -122,7 +206,7 @@ export function useChat(me: Me, onSessionEnded: () => void) {
           break;
       }
     },
-    [ensureProfiles, ensureUsers, refreshIfStranger, resync],
+    [ensureProfiles, ensureUsers, refreshIfStranger, resync, me.id],
   );
 
   // The socket, for the life of the signed-in view.
@@ -264,9 +348,51 @@ export function useChat(me: Me, onSessionEnded: () => void) {
         const list = await api.members(roomId);
         setMembersByRoom((all) => ({ ...all, [roomId]: list }));
       },
+      edit: (roomId: string, messageId: string, content: string): Promise<CallResult> =>
+        clientRef.current?.editMessage(roomId, messageId, content) ?? offline(),
+      remove: (roomId: string, messageId: string): Promise<CallResult> =>
+        clientRef.current?.deleteMessage(roomId, messageId) ?? offline(),
+      react: (roomId: string, messageId: string, emoji: string, active: boolean): Promise<CallResult> =>
+        clientRef.current?.setReaction(roomId, messageId, emoji, active) ?? offline(),
+      /**
+       * The reader has seen up to `messageId`: clears the badge now, and tells
+       * the server at most every 2 s per room, always ending on the newest.
+       */
+      markRead: (roomId: string, messageId: string) => {
+        dispatch({ type: "read", roomId, messageId });
+        const marks = readMarks.current;
+        const entry = marks[roomId] ?? { last: 0, latest: messageId, timer: null };
+        marks[roomId] = entry;
+        if (compareIds(messageId, entry.latest) > 0) entry.latest = messageId;
+        if (entry.timer) return;
+        const flush = () => {
+          entry.timer = null;
+          entry.last = Date.now();
+          clientRef.current?.markRead(roomId, entry.latest);
+        };
+        const wait = entry.last + READ_MARK_EVERY_MS - Date.now();
+        if (wait <= 0) flush();
+        else entry.timer = setTimeout(flush, wait);
+      },
+      receipts: (roomId: string, messageId: string) => api.receipts(roomId, messageId),
+      search: (q: string, before?: string) => api.search(q, { before }),
+      knowAuthors: (messages: Message[]) => ensureProfiles(messages),
     }),
     [ensureProfiles],
   );
+
+  // Pending read marks go out when the view goes away.
+  useEffect(() => {
+    const marks = readMarks.current;
+    return () => {
+      for (const [roomId, entry] of Object.entries(marks)) {
+        if (entry.timer) {
+          clearTimeout(entry.timer);
+          clientRef.current?.markRead(roomId, entry.latest);
+        }
+      }
+    };
+  }, []);
 
   return { state, members, actions };
 }

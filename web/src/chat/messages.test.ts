@@ -54,6 +54,12 @@ describe("mergeMessages", () => {
     expect(must(mergeMessages([deleted], [msg("7", "back?", 9)])[0]).deleted).toBe(true);
   });
 
+  it("prefers the arriving copy at the same version (reactions don't bump it)", () => {
+    const held = msg("7", "same", 3);
+    const fresh = { ...msg("7", "same", 3), reactions: [{ emoji: "👍", count: 1, me: false }] };
+    expect(newerCopy(held, fresh)).toBe(fresh);
+  });
+
   it("returns the same array when there is nothing new", () => {
     const existing = [msg("1")];
     expect(mergeMessages(existing, [])).toBe(existing);
