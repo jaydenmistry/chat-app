@@ -108,7 +108,8 @@ leased from Redis:
 1. **Acquire.** At startup the instance tries
    `SET worker:<n> <instance_uuid> NX PX 15000` for n from a random start,
    wrapping through 0 to 1023, until one succeeds.
-2. **Quarantine.** It waits one full lease period (15 s) before issuing IDs.
+2. **Quarantine.** It waits one full lease period (15 s) before issuing IDs,
+   renewing the lease meanwhile (step 3).
    If Redis lost the key (a restart without persistence) while an old holder
    was still running, the old holder notices at its next renewal (step 3) and
    stops before the new holder starts. `/readyz` is false during quarantine,
@@ -231,7 +232,10 @@ The queries each table serves:
 | Expired guests and expired DM rooms | sequential scan in a 1-minute job, fine at this size; add a partial index if measured slow |
 
 The DM `dm_key` unique constraint makes "one DM per pair" a database
-guarantee, not an application check. Rule: owners cannot leave their room.
+guarantee, not an application check. In the migrations, `room_kind` and
+`member_role` are `text` columns with CHECK constraints rather than Postgres
+enum types, which keeps sqlx's compile-time checking simple; a unique
+partial index enforces one owner per room. Rule: owners cannot leave their room.
 They can delete it (ownership transfer is future work).
 
 ### 4.2 ScyllaDB
@@ -1453,3 +1457,36 @@ docs. Updated at the end of each phase.
 | 7 | `TimeWindowCompactionStrategy` options and `tombstone_gc` for TTL tables | TWCS options accepted by Scylla 2026.3.4 (the migration applies). `tombstone_gc`: open |
 | 8 | Tablets limitations | Scylla 2026.3.4 advertises `LWT_WITH_TABLETS` and `COUNTERS_WITH_TABLETS`, so the 2025.1 limits no longer apply. The design still uses neither |
 | 9 | Driver connections from outside Docker | Scylla advertises its container IP; a client on the host reaching it through a mapped port must have Scylla advertise `127.0.0.1` (`--broadcast-rpc-address`). Only the integration tests do this; inside compose, servers use `scylla:9042` |
+
+---
+
+## 19. Implementation status
+
+What is built, by phase. The sections above describe the whole design; this
+says which parts exist.
+
+**Phase 1:** config, health, migrations, accounts (password, GitHub, guest),
+sessions, Origin checks, the local stack, CI.
+
+**Phase 2:** message IDs and worker leases (3); the rooms, memberships and
+invites schema (4.1) and the Scylla schema and message store (4.2); the
+protocol frames listed as Phase 2 in `docs/protocol.md` (5); the write path
+with idempotency (6.1), fan-out (6.2), connection tasks (6.3), sync and
+resume (6.4), presence and typing (6.6); session revocation closing sockets
+(7); per-frame authorization (8); guest message TTLs (11.3); and the React
+client for all of it.
+
+Parts of those sections that are deliberately not built yet:
+
+| Piece | Section | Phase |
+|---|---|---|
+| Edits, deletes, reactions, and the `room_changes` feed read by sync | 6.4, 6.5 | 3 |
+| The "late insert" change row for acks of IDs older than `W / 2` | 16.1 | 3 |
+| `XADD` to the search stream inside the send script | 6.1, 10 | 3 |
+| Read state, unread counts, receipts, and the `(room_id, last_read_id)` index | 9 | 3 |
+| Rate limits inside the send script; sign-up, login and connection caps | 6.1, 6.3, 11.1 | 4 |
+| Room and membership caps | 11.2 | 4 |
+| Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
+| Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
+| Metrics | 13 | 4 |
+| Reclaiming Scylla space of deleted rooms | 4.2 | 4 |
