@@ -40,6 +40,16 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 
 ## Environment quirks (cloud sandbox)
 
+- **DANGER — check the host first (`hostname`, `docker ps`).** The quirk
+  commands below assume a disposable sandbox whose only containers/volumes are
+  this project's. On `jays-lenovo` the Docker daemon is the owner's **live
+  homelab** (Vaultwarden, Nextcloud, Jellyfin, *arr, Pi-hole, Traefik, …). On
+  that host do NOT run `docker volume prune`, `docker builder prune`, or the
+  fixed-port compose stack (`docker compose up` binds :8080/:5432, colliding
+  with the live Traefik/services) — a volume prune would irreversibly delete
+  homelab data. Owner's choice (2026-11-05): on the homelab, do code +
+  ephemeral testcontainers only (throwaway, random ports, never touch existing
+  volumes); defer compose-stack e2e, image builds, and k6 to a real sandbox.
 - Docker daemon is not running at start: `nohup dockerd >/tmp/dockerd.log 2>&1 &`.
 - Docker Hub rate-limits anonymous pulls here (429). Use
   `mirror.gcr.io/library/<image>` for official images.
@@ -75,8 +85,19 @@ Real-time chat platform, portfolio project. Design: `docs/design.md`.
 - Phase 1: approved 2026-11-05.
 - Phase 2: approved 2026-11-05 (with: add member.joined/member.left frames in
   Phase 3).
-- Phase 3: complete 2026-11-05, summary given, **awaiting owner approval**.
-  CI run 16 green on `93c5db1`. Do not start Phase 4 until approved.
+- Phase 3: approved 2026-11-05. CI run 16 green on `93c5db1`.
+- Phase 4: in progress (started 2026-11-05). Owner answered the three open
+  questions "continue with recommendations" (2026-11-05):
+  1. Add a minimal directory search (`q` on `GET /api/rooms/public`,
+     case-insensitive name match, same 100-row cap and member ordering);
+     rooms below the top 100 are otherwise undiscoverable.
+  2. "Seen by N" stays on-demand (room open / hover). Pushing group receipts
+     to every member is N×N fan-out; matches §9 / decision 5.
+  3. Order within Phase 4: (a) rate limits + size/count/socket caps [gates the
+     public demo], (b) guest cleanup + `user.expired` + demo rooms/reset +
+     admin CLI, (c) graceful drain + `reconnect` frame, (d) metrics incl.
+     `index_lag_seconds`, (e) `server reindex --room` + reclaim Scylla space,
+     (f) Dokploy compose + deploy guide, (g) k6 (measured numbers last).
 - (Phase 1 notes:) Dokploy compose and deploy guide
   deferred to Phase 4. Rate limits on sign-up/login are Phase 4: don't expose
   the demo publicly before then.
