@@ -1,10 +1,10 @@
 //! Rate limiting (docs/design.md 11.1), end to end against real Redis.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use protocol::{
     api::ErrorCode,
-    frames::{FrameErrorCode, ServerFrame},
+    frames::{FrameErrorCode, ServerFrame, close},
 };
 use reqwest::StatusCode;
 use serde_json::json;
@@ -112,6 +112,58 @@ pub async fn room_membership_is_capped(infra: Arc<Infra>) {
         .post_as(&ada, &format!("/api/rooms/{}/join", bobs_room.id), None)
         .await;
     expect_error(joined, StatusCode::FORBIDDEN, ErrorCode::Forbidden).await;
+
+    app.stop().await;
+}
+
+/// A user may hold only so many sockets at once (docs/design.md 11.2): the
+/// one over the cap is closed with `4029`, and closing a socket frees a slot
+/// for the next one. The cap is keyed by user ID, unique to this test.
+pub async fn sockets_are_capped_per_user(infra: Arc<Infra>) {
+    let app = TestApp::spawn_with(&infra, |config| config.max_sockets_per_user = 2).await;
+    let ada = user(&app, "ada").await;
+
+    let first = ws::connect(&app, &ada.cookie).await;
+    let _second = ws::connect(&app, &ada.cookie).await;
+    let refused = ws::connect_capped(&app, &ada.cookie, None).await;
+    assert_eq!(refused.err(), Some(close::TOO_MANY), "third socket refused");
+
+    // Closing one frees a slot; the server releases it when it sees the close.
+    drop(first);
+    let mut admitted = false;
+    for _ in 0..40 {
+        if ws::connect_capped(&app, &ada.cookie, None).await.is_ok() {
+            admitted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(admitted, "a freed slot admits a new socket");
+
+    app.stop().await;
+}
+
+/// Sockets are also capped per client IP, across users. Keyed by a fixed test
+/// IP (via `x-test-ip`) so the bucket is this test's own.
+pub async fn sockets_are_capped_per_ip(infra: Arc<Infra>) {
+    let app = TestApp::spawn_with(&infra, |config| {
+        config.client_ip_header = Some("x-test-ip".into());
+        config.max_sockets_per_ip = 2;
+    })
+    .await;
+    let ip = format!("198.51.100.{}", Uuid::now_v7().as_bytes()[15]);
+    let ada = user(&app, "ada").await;
+    let bob = user(&app, "bob").await;
+
+    let _a = ws::connect_capped(&app, &ada.cookie, Some(&ip))
+        .await
+        .expect("first socket on this IP");
+    let _b = ws::connect_capped(&app, &bob.cookie, Some(&ip))
+        .await
+        .expect("second socket on this IP");
+    // A third from the same IP, even as a different user, is refused.
+    let refused = ws::connect_capped(&app, &ada.cookie, Some(&ip)).await;
+    assert_eq!(refused.err(), Some(close::TOO_MANY), "third socket refused");
 
     app.stop().await;
 }

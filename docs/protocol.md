@@ -140,6 +140,7 @@ Close codes:
 |---|---|---|
 | `4001` | Session ended (logout, revoked, guest expired) | Go to sign-in; don't reconnect |
 | `4008` | Too slow: the client didn't read fast enough | Reconnect and sync |
+| `4029` | Too many open sockets for this user or IP | Back off; don't pile on reconnects |
 | `4400` | Protocol violation (no heartbeat, binary frame) | Reconnect |
 | `1012` | Server restarting | Reconnect, to another instance |
 | `1011`, `1013` | Couldn't set up the connection | Reconnect with backoff |

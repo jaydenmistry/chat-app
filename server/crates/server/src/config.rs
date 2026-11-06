@@ -41,6 +41,11 @@ pub struct Config {
     /// lower cap for guests (`MAX_ROOMS_PER_GUEST`).
     pub max_rooms_per_user: i64,
     pub max_rooms_per_guest: i64,
+    /// Most WebSocket connections one user, and one client IP, may hold open
+    /// at once across all instances (`MAX_SOCKETS_PER_USER`,
+    /// `MAX_SOCKETS_PER_IP`; docs/design.md 11.2).
+    pub max_sockets_per_user: i64,
+    pub max_sockets_per_ip: i64,
     /// Every rate limit, built from the `RATE_*` variables (docs/design.md
     /// 11.1).
     pub rate_limits: RateLimits,
@@ -229,6 +234,8 @@ impl Config {
         let guest_ttl_hours: u64 = p.parse_in_range("GUEST_TTL_HOURS", 24, 1..=168);
         let max_rooms_per_user = p.parse_in_range("MAX_ROOMS_PER_USER", 100, 1..=1_000_000);
         let max_rooms_per_guest = p.parse_in_range("MAX_ROOMS_PER_GUEST", 20, 1..=1_000_000);
+        let max_sockets_per_user = p.parse_in_range("MAX_SOCKETS_PER_USER", 5, 1..=1_000_000);
+        let max_sockets_per_ip = p.parse_in_range("MAX_SOCKETS_PER_IP", 20, 1..=1_000_000);
 
         // Starting values from docs/design.md 11.1. Each is `RATE_<NAME>` =
         // `<capacity>,<refill_per_second>`.
@@ -272,6 +279,8 @@ impl Config {
             guest_ttl: Duration::from_secs(guest_ttl_hours * 3600),
             max_rooms_per_user,
             max_rooms_per_guest,
+            max_sockets_per_user,
+            max_sockets_per_ip,
             rate_limits,
             id_lease: crate::ids::LeaseTimings::default(),
             clock_offset_ms: 0,
@@ -440,6 +449,8 @@ mod tests {
         let config = Config::from_vars(&vars(&minimal())).unwrap();
         assert_eq!(config.max_rooms_per_user, 100);
         assert_eq!(config.max_rooms_per_guest, 20);
+        assert_eq!(config.max_sockets_per_user, 5);
+        assert_eq!(config.max_sockets_per_ip, 20);
         assert_eq!(config.rate_limits.send_user, Bucket::per_second(10.0, 1.0));
         // Five an hour.
         assert!((config.rate_limits.signup_ip.refill_per_sec - 5.0 / 3600.0).abs() < f64::EPSILON);

@@ -195,7 +195,12 @@ pub async fn run_background(state: AppState, mut shutdown: watch::Receiver<bool>
     loop {
         tokio::select! {
             _ = shutdown.changed() => return,
-            _ = refresh.tick() => refresh_fields(&state).await,
+            _ = refresh.tick() => {
+                refresh_fields(&state).await;
+                // The connection caps use the same per-field TTL scheme, so
+                // their sockets are refreshed on the same tick.
+                super::conn_cap::refresh(&state).await;
+            }
             _ = sweep.tick() => sweep_expired(&state).await,
         }
     }

@@ -185,6 +185,8 @@ impl Infra {
             guest_ttl: Duration::from_secs(24 * 3600),
             max_rooms_per_user: 1000,
             max_rooms_per_guest: 1000,
+            max_sockets_per_user: 1000,
+            max_sockets_per_ip: 1000,
             // Effectively unlimited, so ordinary tests are never throttled;
             // the rate-limit and cap tests lower these with `spawn_with`.
             rate_limits: {

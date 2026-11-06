@@ -87,6 +87,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     limits::signup_is_rate_limited_per_ip,
     limits::sends_are_rate_limited_per_user,
     limits::room_membership_is_capped,
+    limits::sockets_are_capped_per_user,
+    limits::sockets_are_capped_per_ip,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

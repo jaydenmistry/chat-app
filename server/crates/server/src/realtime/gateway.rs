@@ -44,6 +44,7 @@ use crate::{
     auth::session::CurrentSession,
     http::{client_ip::ClientIp, error::AppError, origin::origin_allowed},
     realtime::{
+        conn_cap,
         events::{self, Event},
         hub::{CloseReason, ConnHandle, encode},
         mutate, presence,
@@ -121,10 +122,21 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
     let (outbound, queue) = mpsc::channel(OUTBOUND_CAPACITY);
     let (closer, closed) = watch::channel::<Option<CloseReason>>(None);
 
+    // Refuse the connection before any setup if the user or their IP already
+    // holds too many sockets (across all instances).
+    if let Some(scope) = conn_cap::admit(&state, ctx.conn_id, ctx.user_id, ctx.ip).await {
+        tracing::info!(scope, "connection refused: socket cap reached");
+        let _ = sink
+            .send(close_message((close::TOO_MANY, "too many connections")))
+            .await;
+        return;
+    }
+
     let rooms = match storage::rooms::room_ids_for_user(&state.pg, ctx.user_id).await {
         Ok(rooms) => rooms,
         Err(err) => {
             tracing::warn!(error = %err, "loading rooms failed");
+            conn_cap::release(&state, ctx.conn_id, ctx.user_id, ctx.ip).await;
             let _ = sink.send(close_message((1011, "try again"))).await;
             return;
         }
@@ -133,6 +145,7 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
         ctx.conn_id,
         ConnHandle {
             user_id: ctx.user_id,
+            ip: ctx.ip,
             session_id: ctx.session_id,
             token_hash: ctx.token_hash,
             outbound: outbound.clone(),
@@ -145,6 +158,7 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
     if !state.subscriber.ensure(channels).await {
         tracing::warn!("pub/sub unavailable; refusing connection");
         state.subscriber.release(state.hub.unregister(ctx.conn_id));
+        conn_cap::release(&state, ctx.conn_id, ctx.user_id, ctx.ip).await;
         let _ = sink.send(close_message((1013, "try again later"))).await;
         return;
     }
@@ -166,6 +180,7 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
 
     state.subscriber.release(state.hub.unregister(ctx.conn_id));
+    conn_cap::release(&state, ctx.conn_id, ctx.user_id, ctx.ip).await;
     presence::disconnected(&state, ctx.user_id, ctx.conn_id).await;
     tracing::info!("disconnected");
 }

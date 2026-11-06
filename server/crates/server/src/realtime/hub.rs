@@ -13,6 +13,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    net::IpAddr,
     sync::RwLock,
 };
 
@@ -32,6 +33,7 @@ pub type CloseReason = (u16, &'static str);
 /// The parts of a connection other tasks need.
 pub struct ConnHandle {
     pub user_id: Uuid,
+    pub ip: IpAddr,
     pub session_id: Uuid,
     pub token_hash: TokenHash,
     pub outbound: mpsc::Sender<Utf8Bytes>,
@@ -283,6 +285,16 @@ impl Hub {
             .collect()
     }
 
+    /// (user, IP, connection) for every local connection, for refreshing the
+    /// connection caps.
+    pub fn connections_with_ip(&self) -> Vec<(Uuid, IpAddr, ConnId)> {
+        self.read()
+            .conns
+            .iter()
+            .map(|(id, c)| (c.handle.user_id, c.handle.ip, *id))
+            .collect()
+    }
+
     pub fn local_users(&self) -> Vec<Uuid> {
         self.read().users.keys().copied().collect()
     }
@@ -417,6 +429,7 @@ mod tests {
             id,
             ConnHandle {
                 user_id: user,
+                ip: IpAddr::from([127, 0, 0, 1]),
                 session_id: Uuid::now_v7(),
                 token_hash: [0; 32],
                 outbound: tx,

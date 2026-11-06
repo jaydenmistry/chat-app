@@ -1494,12 +1494,17 @@ generic limiter. New error codes `rate_limited` (frames) and
 `too_many_requests` (REST, 429). The per-user room membership cap (11.2;
 guests lower) on room creation, joins and invite accepts — DM creation is
 left out, since it is get-or-create and already bounded by the join limit.
+Connection caps (11.2: 5 sockets per user, 20 per IP) counted globally: each
+socket is a field of a Redis hash (`conns:u:<user>`, `conns:ip:<ip>`) with its
+own TTL, admitted by a Lua script that adds the field only when both counts
+are under their cap, and refreshed on the presence loop's tick so a crashed
+instance's sockets expire within one TTL rather than leaking a slot. The one
+over the cap is closed with `4029`.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Connection caps (sockets per user and per IP) | 6.3, 11.2 | 4 |
 | Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |

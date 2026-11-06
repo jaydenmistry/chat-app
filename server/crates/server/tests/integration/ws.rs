@@ -83,6 +83,64 @@ pub async fn connect(app: &TestApp, cookie: &str) -> Client {
         .expect("connection refused")
 }
 
+/// Connects and reports the outcome of the first frame: `Ok` with the client
+/// once `hello` arrives, or `Err(close_code)` if the server closes the socket
+/// instead (how the connection caps refuse an upgrade). `client_ip` sets the
+/// `x-test-ip` header, for exercising the per-IP cap on an isolated key.
+pub async fn connect_capped(
+    app: &TestApp,
+    cookie: &str,
+    client_ip: Option<&str>,
+) -> Result<Client, u16> {
+    let mut request = format!("ws://{}/ws", app.addr)
+        .into_client_request()
+        .unwrap();
+    let headers = request.headers_mut();
+    headers.insert("cookie", HeaderValue::from_str(cookie).unwrap());
+    headers.insert("origin", HeaderValue::from_str(TEST_ORIGIN).unwrap());
+    headers.insert(
+        "sec-websocket-protocol",
+        HeaderValue::from_str(SUBPROTOCOL).unwrap(),
+    );
+    if let Some(ip) = client_ip {
+        headers.insert("x-test-ip", HeaderValue::from_str(ip).unwrap());
+    }
+    let (socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("the upgrade itself succeeds; the cap closes the socket after");
+    let mut client = Client {
+        socket,
+        pending: VecDeque::new(),
+        user_id: Uuid::nil(),
+        next_req: 0,
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let message = tokio::time::timeout_at(deadline, client.socket.next())
+            .await
+            .expect("timed out waiting for the first frame");
+        match message {
+            Some(Ok(WsMessage::Text(text))) => {
+                match serde_json::from_str::<ServerFrame>(&text).unwrap() {
+                    ServerFrame::Hello { user_id, .. } => {
+                        client.user_id = user_id;
+                        return Ok(client);
+                    }
+                    ServerFrame::Ping => {
+                        client.send(&ClientFrame::Pong).await;
+                    }
+                    other => panic!("expected hello or a close, got {other:?}"),
+                }
+            }
+            Some(Ok(WsMessage::Close(frame))) => {
+                return Err(frame.map(|f| f.code.into()).unwrap_or(0));
+            }
+            None | Some(Err(_)) => return Err(0),
+            Some(Ok(_)) => {}
+        }
+    }
+}
+
 impl Client {
     pub async fn send(&mut self, frame: &ClientFrame) {
         let text = serde_json::to_string(frame).unwrap();

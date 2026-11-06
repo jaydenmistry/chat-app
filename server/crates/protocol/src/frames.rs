@@ -261,6 +261,8 @@ pub mod close {
     pub const TOO_SLOW: u16 = 4008;
     /// The client broke the protocol (for example, no heartbeat).
     pub const PROTOCOL: u16 = 4400;
+    /// Too many open sockets for this user or IP. Don't pile on reconnects.
+    pub const TOO_MANY: u16 = 4029;
     /// The server is restarting. Reconnect.
     pub const RESTARTING: u16 = 1012;
 }
