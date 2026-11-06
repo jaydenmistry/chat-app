@@ -13,7 +13,7 @@
 //! harmless (see `MessageStore::insert`). One message, one ID, however many
 //! attempts it takes, and whichever instances they land on.
 
-use std::{sync::LazyLock, time::Duration};
+use std::{net::IpAddr, sync::LazyLock, time::Duration};
 
 use protocol::{
     api::Message,
@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::{
     auth::token,
     http::messages::{RESUME_OVERLAP_MS, to_api},
+    rate_limit,
     realtime::events::{self, Event},
     search,
     state::AppState,
@@ -55,10 +56,24 @@ const PUBLISH_ATTEMPTS: u32 = 5;
 /// write can't leave the message unindexed (docs/design.md 10). A retry
 /// adds a fresh entry, because the first attempt's may have been dropped
 /// while its write was missing. A conflicting reuse of the key adds none.
-/// Phase 4 adds the rate limit here too.
-static CLAIM_KEY: LazyLock<Script> = LazyLock::new(|| {
-    Script::new(
-        r"
+///
+/// The send rate limit (docs/design.md 11.1) is folded in here, so it is
+/// charged exactly once per stored message: a new message consumes a token
+/// from the user, IP and room buckets (all three, or none, and then it is not
+/// claimed); a retry of an already-claimed message is never charged again.
+static CLAIM_KEY: LazyLock<Script> =
+    LazyLock::new(|| Script::new(&format!("{}{CLAIM_BODY}", rate_limit::TAKE_DEF)));
+
+/// Sentinel the claim script returns when the send is rate-limited.
+const RATE_LIMITED: &str = "ratelimited";
+
+/// The body of [`CLAIM_KEY`], appended to the shared `rl_take` definition.
+/// KEYS[1] idempotency key, KEYS[2] search stream, KEYS[3..=5] the send
+/// buckets (user, IP, room). ARGV[1] value, [2] TTL seconds, [3] room ID, [4]
+/// `<room>:<fingerprint>`, [5] stream cap, then a `capacity, refill` pair for
+/// each of the three buckets. Returns nil for a new claim, the stored value
+/// for a retry or a conflicting reuse, or `ratelimited`.
+const CLAIM_BODY: &str = r"
         local existing = redis.call('GET', KEYS[1])
         local value = ARGV[1]
         if existing then
@@ -68,18 +83,26 @@ static CLAIM_KEY: LazyLock<Script> = LazyLock::new(|| {
           end
           value = existing
         else
+          local t = redis.call('TIME')
+          local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+          local keys = {KEYS[3], KEYS[4], KEYS[5]}
+          local caps = {tonumber(ARGV[6]), tonumber(ARGV[8]), tonumber(ARGV[10])}
+          local refills = {tonumber(ARGV[7]), tonumber(ARGV[9]), tonumber(ARGV[11])}
+          if not rl_take(keys, caps, refills, now) then
+            return 'ratelimited'
+          end
           redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
         end
         local id = string.sub(value, 1, string.find(value, ':', 1, true) - 1)
         redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[5], '*',
                    'room_id', ARGV[3], 'message_id', id)
         return existing or false
-        ",
-    )
-});
+        ";
 
 pub struct Sender<'a> {
     pub user_id: Uuid,
+    /// The connection's client IP, for the per-IP send rate limit.
+    pub ip: IpAddr,
     /// When the author's account expires (guests).
     pub expires_at: Option<OffsetDateTime>,
     pub state: &'a AppState,
@@ -224,14 +247,24 @@ pub async fn send(
         }
     };
     let fingerprint = fingerprint(room_id, content);
+    let limits = &state.config.rate_limits;
     let claimed: Option<String> = match CLAIM_KEY
         .key(format!("idem:{}:{idempotency_key}", sender.user_id))
         .key(search::STREAM)
+        .key(format!("rl:s:u:{}", sender.user_id))
+        .key(format!("rl:s:ip:{}", sender.ip))
+        .key(format!("rl:s:r:{room_id}"))
         .arg(claim_value(candidate, room_id, &fingerprint))
         .arg(IDEMPOTENCY_TTL_SECS)
         .arg(room_id.to_string())
         .arg(format!("{room_id}:{fingerprint}"))
         .arg(search::MAX_STREAM_LEN)
+        .arg(limits.send_user.capacity)
+        .arg(limits.send_user.refill_per_sec)
+        .arg(limits.send_ip.capacity)
+        .arg(limits.send_ip.refill_per_sec)
+        .arg(limits.send_room.capacity)
+        .arg(limits.send_room.refill_per_sec)
         .invoke_async(&mut state.redis.clone())
         .await
     {
@@ -242,6 +275,14 @@ pub async fn send(
             return error(req_id, FrameErrorCode::Unavailable, "try again");
         }
     };
+    if claimed.as_deref() == Some(RATE_LIMITED) {
+        rate_limit::record_rejection("send");
+        return error(
+            req_id,
+            FrameErrorCode::RateLimited,
+            "you're sending messages too fast; slow down",
+        );
+    }
     let (id, duplicate) = match claimed.as_deref().map(parse_claim) {
         None => (candidate, false),
         Some(Some((id, claimed_room, claimed_fingerprint)))

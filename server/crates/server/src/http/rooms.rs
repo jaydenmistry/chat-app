@@ -38,12 +38,29 @@ use crate::{
         messages::floor,
     },
     permissions::{self, Action, Denied},
+    rate_limit,
     realtime::events::{self, Event},
     state::AppState,
 };
 
 const INVITE_LIFETIME: Duration = Duration::from_secs(7 * 24 * 3600);
 const INVITE_MAX_USES: i32 = 25;
+
+/// The join / DM-creation limit (docs/design.md 11.1): guests get a lower cap.
+async fn enforce_join_limit(state: &AppState, user: &User) -> Result<(), AppError> {
+    let bucket = if user.is_guest {
+        state.config.rate_limits.join_guest
+    } else {
+        state.config.rate_limits.join_user
+    };
+    rate_limit::enforce(
+        &mut state.redis.clone(),
+        "join",
+        "you're joining rooms too fast; try again later",
+        &[(format!("rl:join:u:{}", user.id), bucket)],
+    )
+    .await
+}
 
 impl From<Denied> for AppError {
     fn from(denied: Denied) -> Self {
@@ -215,6 +232,16 @@ pub async fn create(
 ) -> Result<Response, AppError> {
     let user = caller(&state, &session).await?;
     permissions::can_create_room(user.is_guest)?;
+    rate_limit::enforce(
+        &mut state.redis.clone(),
+        "room_create",
+        "you're creating rooms too fast; try again later",
+        &[(
+            format!("rl:roomcreate:u:{}", user.id),
+            state.config.rate_limits.room_create_user,
+        )],
+    )
+    .await?;
     if req.kind == RoomKind::Dm {
         return Err(AppError::invalid("kind", "create DMs with POST /api/dms"));
     }
@@ -236,11 +263,13 @@ pub async fn join(
     if rooms::room_kind(&state.pg, room_id).await? != Some(RoomKind::Public) {
         return Err(AppError::NotFound);
     }
-    let added = rooms::add_member(&state.pg, room_id, session.user_id).await?;
-    let info = room_info_for(&state, room_id, session.user_id).await?;
+    let user = caller(&state, &session).await?;
+    enforce_join_limit(&state, &user).await?;
+    let added = rooms::add_member(&state.pg, room_id, user.id).await?;
+    let info = room_info_for(&state, room_id, user.id).await?;
     if added {
-        announce_joined(&state, session.user_id, info.clone()).await;
-        announce_member_joined(&state, room_id, session.user_id).await;
+        announce_joined(&state, user.id, info.clone()).await;
+        announce_member_joined(&state, room_id, user.id).await;
     }
     Ok(Json(info))
 }
@@ -371,6 +400,7 @@ pub async fn accept_invite(
 ) -> Result<Json<RoomInfo>, AppError> {
     let user = caller(&state, &session).await?;
     permissions::can_accept_invite(user.is_guest)?;
+    enforce_join_limit(&state, &user).await?;
     let room_id = match rooms::accept_invite(&state.pg, &code, user.id).await? {
         InviteOutcome::Joined(room_id) => {
             let info = room_info_for(&state, room_id, user.id).await?;
@@ -390,6 +420,7 @@ pub async fn open_dm(
     ApiJson(req): ApiJson<CreateDmRequest>,
 ) -> Result<Json<RoomInfo>, AppError> {
     let user = caller(&state, &session).await?;
+    enforce_join_limit(&state, &user).await?;
     let handle = req.handle.trim().trim_start_matches('@').to_lowercase();
     let peer = users::find_by_handle(&state.pg, &handle)
         .await?

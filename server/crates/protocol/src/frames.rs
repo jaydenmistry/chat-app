@@ -205,6 +205,9 @@ pub enum FrameErrorCode {
     InvalidReaction,
     /// The idempotency key was already used for a different message.
     IdempotencyConflict,
+    /// Too many requests of this kind too quickly (docs/design.md 11.1). Not
+    /// retryable automatically: the user can try again after slowing down.
+    RateLimited,
     /// A dependency is down. Retry the same frame, with the same key.
     Unavailable,
     /// A bug on our side. Retryable.

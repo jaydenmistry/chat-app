@@ -20,6 +20,7 @@ mod github;
 mod health;
 mod ids;
 mod infra;
+mod limits;
 mod messages;
 mod migrations;
 mod realtime;
@@ -83,6 +84,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     features::search_respects_membership_edits_and_deletes,
     failures::redis_outage_then_resync,
     failures::instance_restart_loses_nothing,
+    limits::signup_is_rate_limited_per_ip,
+    limits::sends_are_rate_limited_per_user,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

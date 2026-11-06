@@ -130,6 +130,7 @@ sees them (`me`), in the allowlist's order. A deleted message has empty
 | `idempotency_conflict` | no | The key was already used for a different room or content. Generate a new key for new content |
 | `not_found` | no | Edit, delete or reaction on a message that doesn't exist, is deleted, or is before your history in the room |
 | `invalid_reaction` | no | The emoji isn't in the allowlist |
+| `rate_limited` | no | Too many of this action too quickly (design 11.1: sends per user/IP/room; edits, deletes and reactions per user). Slow down; the user can try again. Nothing was stored |
 | `unavailable` | yes | A dependency is down. Retry the same frame with the same key |
 | `internal` | yes | A bug on our side. Retry |
 
@@ -263,7 +264,8 @@ All bodies are JSON. State-changing requests (POST, DELETE) must carry an
 allowed `Origin`, which browsers send automatically. Errors are
 `{"code", "message", "field"?}` with stable codes (`bad_request`,
 `invalid_input`, `unauthorized`, `forbidden`, `not_found`, `conflict`,
-`unavailable`, `internal`).
+`too_many_requests` (429, a rate limit: sign-up, guest creation, login, room
+creation, joins and DM creation; design 11.1), `unavailable`, `internal`).
 
 | Method and path | Purpose |
 |---|---|

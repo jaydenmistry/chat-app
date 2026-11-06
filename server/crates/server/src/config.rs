@@ -8,6 +8,8 @@ use std::{
     collections::HashMap, fmt, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration,
 };
 
+use crate::rate_limit::{Bucket, RateLimits};
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Where the HTTP server listens (`BIND_ADDR`).
@@ -35,6 +37,13 @@ pub struct Config {
     pub github: Option<GithubConfig>,
     pub session_ttl: Duration,
     pub guest_ttl: Duration,
+    /// Most rooms a user may be a member of (`MAX_ROOMS_PER_USER`), and the
+    /// lower cap for guests (`MAX_ROOMS_PER_GUEST`).
+    pub max_rooms_per_user: i64,
+    pub max_rooms_per_guest: i64,
+    /// Every rate limit, built from the `RATE_*` variables (docs/design.md
+    /// 11.1).
+    pub rate_limits: RateLimits,
     /// Worker-ID lease timings. Not configurable by environment: the
     /// defaults are the design. Tests shorten the quarantine.
     pub id_lease: crate::ids::LeaseTimings,
@@ -218,6 +227,24 @@ impl Config {
 
         let session_ttl_days: u64 = p.parse_in_range("SESSION_TTL_DAYS", 30, 1..=365);
         let guest_ttl_hours: u64 = p.parse_in_range("GUEST_TTL_HOURS", 24, 1..=168);
+        let max_rooms_per_user = p.parse_in_range("MAX_ROOMS_PER_USER", 100, 1..=1_000_000);
+        let max_rooms_per_guest = p.parse_in_range("MAX_ROOMS_PER_GUEST", 20, 1..=1_000_000);
+
+        // Starting values from docs/design.md 11.1. Each is `RATE_<NAME>` =
+        // `<capacity>,<refill_per_second>`.
+        let rate_limits = RateLimits {
+            send_user: p.bucket("RATE_SEND_USER", Bucket::per_second(10.0, 1.0)),
+            send_ip: p.bucket("RATE_SEND_IP", Bucket::per_second(30.0, 3.0)),
+            send_room: p.bucket("RATE_SEND_ROOM", Bucket::per_second(50.0, 10.0)),
+            mutate_user: p.bucket("RATE_MUTATE_USER", Bucket::per_second(20.0, 2.0)),
+            signup_ip: p.bucket("RATE_SIGNUP_IP", Bucket::per_period(5.0, 3600.0)),
+            guest_ip: p.bucket("RATE_GUEST_IP", Bucket::per_period(10.0, 3600.0)),
+            login_ip: p.bucket("RATE_LOGIN_IP", Bucket::per_period(20.0, 600.0)),
+            login_account: p.bucket("RATE_LOGIN_ACCOUNT", Bucket::per_period(10.0, 600.0)),
+            room_create_user: p.bucket("RATE_ROOM_CREATE_USER", Bucket::per_period(10.0, 86400.0)),
+            join_user: p.bucket("RATE_JOIN_USER", Bucket::per_period(30.0, 3600.0)),
+            join_guest: p.bucket("RATE_JOIN_GUEST", Bucket::per_period(10.0, 3600.0)),
+        };
 
         if !p.problems.is_empty() {
             return Err(ConfigError {
@@ -243,6 +270,9 @@ impl Config {
             github,
             session_ttl: Duration::from_secs(session_ttl_days * 24 * 3600),
             guest_ttl: Duration::from_secs(guest_ttl_hours * 3600),
+            max_rooms_per_user,
+            max_rooms_per_guest,
+            rate_limits,
             id_lease: crate::ids::LeaseTimings::default(),
             clock_offset_ms: 0,
         })
@@ -317,6 +347,31 @@ impl Parser<'_> {
         value
     }
 
+    /// A rate-limit bucket from `<capacity>,<refill_per_second>`, both
+    /// positive. Falls back to `default` and records a problem otherwise.
+    fn bucket(&mut self, name: &str, default: Bucket) -> Bucket {
+        let Some(raw) = self.optional(name) else {
+            return default;
+        };
+        let parsed = raw.split_once(',').and_then(|(cap, refill)| {
+            match (cap.trim().parse::<f64>(), refill.trim().parse::<f64>()) {
+                (Ok(capacity), Ok(refill_per_sec)) if capacity > 0.0 && refill_per_sec > 0.0 => {
+                    Some(Bucket {
+                        capacity,
+                        refill_per_sec,
+                    })
+                }
+                _ => None,
+            }
+        });
+        parsed.unwrap_or_else(|| {
+            self.problem(format!(
+                "{name}: expected `<capacity>,<refill_per_second>` with positive numbers, got `{raw}`"
+            ));
+            default
+        })
+    }
+
     /// Accepts `scheme://host[:port]` with no path, which is the exact form
     /// browsers send in the `Origin` header. A trailing slash is removed.
     fn origin(&mut self, name: &str, raw: &str) -> Option<String> {
@@ -377,6 +432,33 @@ mod tests {
         assert_eq!(
             config.github_redirect_url(),
             "https://chat.example.com/api/auth/github/callback"
+        );
+    }
+
+    #[test]
+    fn rate_limits_default_and_parse() {
+        let config = Config::from_vars(&vars(&minimal())).unwrap();
+        assert_eq!(config.max_rooms_per_user, 100);
+        assert_eq!(config.max_rooms_per_guest, 20);
+        assert_eq!(config.rate_limits.send_user, Bucket::per_second(10.0, 1.0));
+        // Five an hour.
+        assert!((config.rate_limits.signup_ip.refill_per_sec - 5.0 / 3600.0).abs() < f64::EPSILON);
+
+        let mut pairs = minimal();
+        pairs.push(("RATE_SEND_USER", "4,0.5"));
+        let config = Config::from_vars(&vars(&pairs)).unwrap();
+        assert_eq!(config.rate_limits.send_user, Bucket::per_second(4.0, 0.5));
+    }
+
+    #[test]
+    fn rejects_a_malformed_rate_limit() {
+        let mut pairs = minimal();
+        pairs.push(("RATE_SEND_USER", "10"));
+        assert_eq!(
+            problems(&pairs),
+            [
+                "RATE_SEND_USER: expected `<capacity>,<refill_per_second>` with positive numbers, got `10`"
+            ]
         );
     }
 

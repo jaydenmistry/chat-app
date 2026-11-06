@@ -9,6 +9,7 @@ pub mod healthcheck;
 pub mod http;
 pub mod ids;
 pub mod permissions;
+pub mod rate_limit;
 pub mod realtime;
 pub mod search;
 pub mod startup;

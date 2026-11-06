@@ -1486,11 +1486,18 @@ search (10): the stream entry inside the send script, the indexer consumer
 group on every instance, and the endpoint with Scylla hydration; and the
 client for all of it.
 
+**Phase 4 (in progress):** rate limits (11.1) as Redis token buckets, one
+shared Lua helper: the send limit (per user, IP and room) folded into the
+idempotency-claim script, and per-user edit/delete/react and per-IP or
+per-account sign-up, guest, login, room-creation and join/DM limits via a
+generic limiter. New error codes `rate_limited` (frames) and
+`too_many_requests` (REST, 429).
+
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Rate limits inside the send script and on edits, deletes and reactions; sign-up, login and connection caps | 6.1, 6.3, 6.5, 11.1 | 4 |
+| Connection caps (sockets per user and per IP) | 6.3, 11.2 | 4 |
 | Room and membership caps | 11.2 | 4 |
 | Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |

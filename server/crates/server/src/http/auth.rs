@@ -23,13 +23,14 @@ use crate::{
     auth::{
         github,
         session::{self, CurrentSession},
-        validate,
+        token, validate,
     },
     http::{
         client_ip::ClientIp,
         cookies::Cookie,
         error::{ApiJson, AppError},
     },
+    rate_limit,
     realtime::events::{self, Event},
     state::AppState,
 };
@@ -79,6 +80,16 @@ pub async fn signup(
     headers: HeaderMap,
     ApiJson(req): ApiJson<SignupRequest>,
 ) -> Result<Response, AppError> {
+    rate_limit::enforce(
+        &mut state.redis.clone(),
+        "signup",
+        "too many sign-up attempts; try again later",
+        &[(
+            format!("rl:signup:ip:{ip}"),
+            state.config.rate_limits.signup_ip,
+        )],
+    )
+    .await?;
     let email = validate::email(&req.email)?;
     validate::password(&req.password)?;
     let handle = validate::handle(&req.handle)?;
@@ -127,6 +138,29 @@ pub async fn login(
     let Ok(email) = validate::email(&req.email) else {
         return Err(WRONG_CREDENTIALS);
     };
+    // Limited per IP and per account (docs/design.md 11.1), so neither a
+    // single host nor a single target can be hammered. The account bucket is
+    // keyed by a hash of the email, not the email itself.
+    let account = token::sha256(email.as_bytes())[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    rate_limit::enforce(
+        &mut state.redis.clone(),
+        "login",
+        "too many sign-in attempts; try again later",
+        &[
+            (
+                format!("rl:login:ip:{ip}"),
+                state.config.rate_limits.login_ip,
+            ),
+            (
+                format!("rl:login:acct:{account}"),
+                state.config.rate_limits.login_account,
+            ),
+        ],
+    )
+    .await?;
     let record = users::find_for_login(&state.pg, &email).await?;
     let stored_hash = record.as_ref().and_then(|r| r.password_hash.clone());
     // Always runs one Argon2 verification, so the response time doesn't
@@ -148,6 +182,16 @@ pub async fn guest(
     ClientIp(ip): ClientIp,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    rate_limit::enforce(
+        &mut state.redis.clone(),
+        "guest",
+        "too many guest accounts from here; try again later",
+        &[(
+            format!("rl:guest:ip:{ip}"),
+            state.config.rate_limits.guest_ip,
+        )],
+    )
+    .await?;
     let expires_at = OffsetDateTime::now_utc() + state.config.guest_ttl;
     // 36^6 (about 2 billion) suffixes make a collision rare; retry if one
     // happens anyway.

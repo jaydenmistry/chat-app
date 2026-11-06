@@ -183,6 +183,26 @@ impl Infra {
             github: None,
             session_ttl: Duration::from_secs(30 * 24 * 3600),
             guest_ttl: Duration::from_secs(24 * 3600),
+            max_rooms_per_user: 1000,
+            max_rooms_per_guest: 1000,
+            // Effectively unlimited, so ordinary tests are never throttled;
+            // the rate-limit and cap tests lower these with `spawn_with`.
+            rate_limits: {
+                let big = server::rate_limit::Bucket::per_second(1e9, 1e9);
+                server::rate_limit::RateLimits {
+                    send_user: big,
+                    send_ip: big,
+                    send_room: big,
+                    mutate_user: big,
+                    signup_ip: big,
+                    guest_ip: big,
+                    login_ip: big,
+                    login_account: big,
+                    room_create_user: big,
+                    join_user: big,
+                    join_guest: big,
+                }
+            },
             // No quarantine: every test app would otherwise wait 15 s. The
             // quarantine only matters when Redis loses its data.
             id_lease: server::ids::LeaseTimings {

@@ -24,6 +24,8 @@ pub enum AppError {
         field: &'static str,
         message: &'static str,
     },
+    /// Rate limit exceeded (docs/design.md 11.1). Answered with 429.
+    TooManyRequests(&'static str),
     /// A dependency failed in a way that may succeed on retry.
     Unavailable(anyhow::Error),
     /// A bug or an unexpected failure. Details are logged, never returned.
@@ -51,6 +53,7 @@ impl std::fmt::Display for AppError {
             Self::Unauthorized(message) | Self::Forbidden(message) => f.write_str(message),
             Self::NotFound => f.write_str("not found"),
             Self::Conflict { field, message } => write!(f, "conflict on {field}: {message}"),
+            Self::TooManyRequests(message) => write!(f, "too many requests: {message}"),
             Self::Unavailable(err) => write!(f, "unavailable: {err:#}"),
             Self::Internal(err) => write!(f, "internal: {err:#}"),
         }
@@ -97,6 +100,12 @@ impl IntoResponse for AppError {
                 ErrorCode::Conflict,
                 message.into(),
                 Some(field),
+            ),
+            Self::TooManyRequests(message) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                ErrorCode::TooManyRequests,
+                message.into(),
+                None,
             ),
             Self::Unavailable(err) => {
                 tracing::warn!(error = format!("{err:#}"), "dependency unavailable");

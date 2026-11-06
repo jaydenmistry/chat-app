@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use crate::{
     http::messages::floor,
+    rate_limit,
     realtime::{
         events::{self, Event},
         send::{Outcome, Publish, Sender, WRITE_TIMEOUT, error},
@@ -46,6 +47,36 @@ const READ_MARK_SKEW_MS: u64 = 1_000;
 struct Rejection(FrameErrorCode, &'static str);
 
 const UNAVAILABLE: Rejection = Rejection(FrameErrorCode::Unavailable, "try again");
+
+/// The per-user edit/delete/react limit (docs/design.md 11.1), shared by all
+/// three. On a Redis failure it fails closed with `unavailable`, like the
+/// other Redis steps here.
+/// Returns `Some(reply)` when the caller is over the limit (or the check
+/// failed); `None` when the action may proceed.
+async fn rate_limited(sender: &Sender<'_>, req_id: &str, action: &'static str) -> Option<Outcome> {
+    let state = sender.state;
+    let key = format!("rl:m:u:{}", sender.user_id);
+    match rate_limit::check(
+        &mut state.redis.clone(),
+        &[(key, state.config.rate_limits.mutate_user)],
+    )
+    .await
+    {
+        Ok(true) => None,
+        Ok(false) => {
+            rate_limit::record_rejection(action);
+            Some(error(
+                req_id,
+                FrameErrorCode::RateLimited,
+                "you're doing that too fast; slow down",
+            ))
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "rate limit check failed");
+            Some(error(req_id, FrameErrorCode::Unavailable, "try again"))
+        }
+    }
+}
 
 /// The message a change applies to, as loaded in step 2.
 struct Target {
@@ -183,6 +214,9 @@ pub async fn edit(
     message_id: MessageId,
     raw_content: &str,
 ) -> Outcome {
+    if let Some(outcome) = rate_limited(sender, req_id, "edit").await {
+        return outcome;
+    }
     let content = match validate::message_content(raw_content) {
         Ok(content) => content,
         Err(e) => {
@@ -236,6 +270,9 @@ pub async fn delete(
     room_id: Uuid,
     message_id: MessageId,
 ) -> Outcome {
+    if let Some(outcome) = rate_limited(sender, req_id, "delete").await {
+        return outcome;
+    }
     let target = attempt!(
         req_id,
         load(sender, room_id, message_id, Ownership::Author).await
@@ -277,6 +314,9 @@ pub async fn react(
     emoji: &str,
     active: bool,
 ) -> Outcome {
+    if let Some(outcome) = rate_limited(sender, req_id, "react").await {
+        return outcome;
+    }
     if !reactions::is_allowed(emoji) {
         return error(
             req_id,

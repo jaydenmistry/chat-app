@@ -3,4 +3,4 @@
 /**
  * Stable error codes. Clients branch on the code, never on the message text.
  */
-export type ErrorCode = "bad_request" | "invalid_input" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "unavailable" | "internal";
+export type ErrorCode = "bad_request" | "invalid_input" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "too_many_requests" | "unavailable" | "internal";

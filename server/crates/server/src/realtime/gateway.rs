@@ -15,6 +15,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    net::IpAddr,
     time::Duration,
 };
 
@@ -41,7 +42,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::session::CurrentSession,
-    http::{error::AppError, origin::origin_allowed},
+    http::{client_ip::ClientIp, error::AppError, origin::origin_allowed},
     realtime::{
         events::{self, Event},
         hub::{CloseReason, ConnHandle, encode},
@@ -62,6 +63,7 @@ const MAX_WATCHED: usize = 200;
 pub async fn upgrade(
     State(state): State<AppState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     session: Result<CurrentSession, AppError>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -88,6 +90,7 @@ pub async fn upgrade(
     let ctx = ConnCtx {
         conn_id: Uuid::now_v7(),
         user_id: user.id,
+        ip,
         session_id: session.session_id,
         token_hash: session.token_hash,
         expires_at: user.expires_at,
@@ -100,6 +103,7 @@ pub async fn upgrade(
 struct ConnCtx {
     conn_id: Uuid,
     user_id: Uuid,
+    ip: IpAddr,
     session_id: Uuid,
     token_hash: TokenHash,
     expires_at: Option<OffsetDateTime>,
@@ -226,6 +230,7 @@ async fn read_loop(
     let mut last_typing: HashMap<Uuid, Instant> = HashMap::new();
     let sender = Sender {
         user_id: ctx.user_id,
+        ip: ctx.ip,
         expires_at: ctx.expires_at,
         state,
     };

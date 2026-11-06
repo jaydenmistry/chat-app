@@ -23,6 +23,9 @@ pub enum ErrorCode {
     NotFound,
     /// The resource already exists (for example, the email is registered).
     Conflict,
+    /// Rate limit exceeded (docs/design.md 11.1): too many requests of this
+    /// kind too quickly. The HTTP status is 429.
+    TooManyRequests,
     /// A dependency is down. Safe to retry.
     Unavailable,
     Internal,
