@@ -87,3 +87,31 @@ pub async fn sends_are_rate_limited_per_user(infra: Arc<Infra>) {
 
     app.stop().await;
 }
+
+/// A user may belong to at most the room cap (docs/design.md 11.2): once at
+/// the cap, neither creating nor joining another room is allowed.
+pub async fn room_membership_is_capped(infra: Arc<Infra>) {
+    let app = TestApp::spawn_with(&infra, |config| config.max_rooms_per_user = 2).await;
+    let ada = user(&app, "ada").await;
+    app.create_room(&ada, "r1", "public").await;
+    app.create_room(&ada, "r2", "public").await;
+
+    // A third room ada would create or join is refused.
+    let created = app
+        .post_as(
+            &ada,
+            "/api/rooms",
+            Some(json!({"name": "r3", "kind": "public"})),
+        )
+        .await;
+    expect_error(created, StatusCode::FORBIDDEN, ErrorCode::Forbidden).await;
+
+    let bob = user(&app, "bob").await;
+    let bobs_room = app.create_room(&bob, "bobs", "public").await;
+    let joined = app
+        .post_as(&ada, &format!("/api/rooms/{}/join", bobs_room.id), None)
+        .await;
+    expect_error(joined, StatusCode::FORBIDDEN, ErrorCode::Forbidden).await;
+
+    app.stop().await;
+}

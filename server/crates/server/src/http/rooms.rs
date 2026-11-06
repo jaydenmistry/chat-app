@@ -46,6 +46,27 @@ use crate::{
 const INVITE_LIFETIME: Duration = Duration::from_secs(7 * 24 * 3600);
 const INVITE_MAX_USES: i32 = 25;
 
+/// The membership cap is reached (docs/design.md 11.2).
+const ROOM_CAP_FULL: &str = "you've reached the maximum number of rooms; leave one first";
+
+/// How many rooms this user may belong to: a lower cap for guests.
+fn room_cap(state: &AppState, user: &User) -> i64 {
+    if user.is_guest {
+        state.config.max_rooms_per_guest
+    } else {
+        state.config.max_rooms_per_user
+    }
+}
+
+/// Fails when the user already belongs to their maximum number of rooms
+/// (docs/design.md 11.2). Checked before any path that adds a new membership.
+async fn check_room_cap(state: &AppState, user: &User) -> Result<(), AppError> {
+    if rooms::membership_count(&state.pg, user.id).await? >= room_cap(state, user) {
+        return Err(AppError::Forbidden(ROOM_CAP_FULL));
+    }
+    Ok(())
+}
+
 /// The join / DM-creation limit (docs/design.md 11.1): guests get a lower cap.
 async fn enforce_join_limit(state: &AppState, user: &User) -> Result<(), AppError> {
     let bucket = if user.is_guest {
@@ -242,6 +263,7 @@ pub async fn create(
         )],
     )
     .await?;
+    check_room_cap(&state, &user).await?;
     if req.kind == RoomKind::Dm {
         return Err(AppError::invalid("kind", "create DMs with POST /api/dms"));
     }
@@ -265,6 +287,14 @@ pub async fn join(
     }
     let user = caller(&state, &session).await?;
     enforce_join_limit(&state, &user).await?;
+    // The cap guards new memberships only; re-joining a room you're already in
+    // stays a no-op even at the cap.
+    if rooms::membership(&state.pg, room_id, user.id)
+        .await?
+        .is_none()
+    {
+        check_room_cap(&state, &user).await?;
+    }
     let added = rooms::add_member(&state.pg, room_id, user.id).await?;
     let info = room_info_for(&state, room_id, user.id).await?;
     if added {
@@ -401,8 +431,17 @@ pub async fn accept_invite(
     let user = caller(&state, &session).await?;
     permissions::can_accept_invite(user.is_guest)?;
     enforce_join_limit(&state, &user).await?;
+    // The cap can't be checked before accepting (the invite's room isn't known
+    // until then), and only a genuine new join should count, so check after
+    // and undo an over-cap join.
+    let cap = room_cap(&state, &user);
+    let count_before = rooms::membership_count(&state.pg, user.id).await?;
     let room_id = match rooms::accept_invite(&state.pg, &code, user.id).await? {
         InviteOutcome::Joined(room_id) => {
+            if count_before >= cap {
+                rooms::remove_member(&state.pg, room_id, user.id).await?;
+                return Err(AppError::Forbidden(ROOM_CAP_FULL));
+            }
             let info = room_info_for(&state, room_id, user.id).await?;
             announce_joined(&state, user.id, info.clone()).await;
             announce_member_joined(&state, room_id, user.id).await;

@@ -1491,14 +1491,15 @@ shared Lua helper: the send limit (per user, IP and room) folded into the
 idempotency-claim script, and per-user edit/delete/react and per-IP or
 per-account sign-up, guest, login, room-creation and join/DM limits via a
 generic limiter. New error codes `rate_limited` (frames) and
-`too_many_requests` (REST, 429).
+`too_many_requests` (REST, 429). The per-user room membership cap (11.2;
+guests lower) on room creation, joins and invite accepts — DM creation is
+left out, since it is get-or-create and already bounded by the join limit.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
 | Connection caps (sockets per user and per IP) | 6.3, 11.2 | 4 |
-| Room and membership caps | 11.2 | 4 |
 | Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |
