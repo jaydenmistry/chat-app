@@ -98,6 +98,7 @@ reply.
 | `read.updated` | `room_id`, `user_id`, `message_id` | A read position moved forward: yours from another tab (clear the badge), or, in a DM only, the other person's (show "Seen") |
 | `member.joined` | `room_id`, `member` | Someone joined a room you're in |
 | `member.left` | `room_id`, `user_id` | Someone left or was removed from a room you're in |
+| `user.expired` | `room_id`, `user_id` | A guest expired and was deleted; hide their messages in this room |
 
 A `message`:
 

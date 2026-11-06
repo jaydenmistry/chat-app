@@ -129,6 +129,8 @@ export type Action =
   | { type: "expireTyping"; now: number }
   | { type: "presence"; userId: string; status: PresenceStatus }
   | { type: "profiles"; profiles: UserProfile[] }
+  /** A guest expired: drop their messages from this room. */
+  | { type: "userExpired"; roomId: string; userId: string }
   | { type: "notice"; notice: string | null };
 
 const emptyRoom: RoomMessages = { items: [], olderCursor: null, loaded: false, changeCursor: null };
@@ -399,6 +401,13 @@ export function reducer(state: ChatState, action: Action): ChatState {
       const profiles = { ...state.profiles };
       for (const p of action.profiles) profiles[p.id] = p;
       return { ...state, profiles };
+    }
+    case "userExpired": {
+      const room = state.messages[action.roomId];
+      if (!room) return state;
+      const items = room.items.filter((m) => m.author_id !== action.userId);
+      if (items.length === room.items.length) return state;
+      return { ...state, messages: { ...state.messages, [action.roomId]: { ...room, items } } };
     }
     case "notice":
       return { ...state, notice: action.notice };

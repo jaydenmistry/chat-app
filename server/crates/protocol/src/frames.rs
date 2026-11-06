@@ -169,6 +169,10 @@ pub enum ServerFrame {
     /// Someone left or was removed from a room you are in.
     #[serde(rename = "member.left")]
     MemberLeft { room_id: Uuid, user_id: Uuid },
+    /// A guest expired and was deleted. Hide their messages in this room at
+    /// once; the stored copies expire on their own (docs/design.md 11.3).
+    #[serde(rename = "user.expired")]
+    UserExpired { room_id: Uuid, user_id: Uuid },
     #[serde(rename = "typing")]
     Typing { room_id: Uuid, user_id: Uuid },
     #[serde(rename = "presence")]

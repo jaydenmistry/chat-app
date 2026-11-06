@@ -205,6 +205,66 @@ pub async fn find_by_handle(pool: &PgPool, handle: &str) -> Result<Option<User>,
     .await
 }
 
+/// An expired guest the cleanup job removed, with the rooms they were in at
+/// the time (collected before the delete, so clients can be told).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredGuest {
+    pub user_id: Uuid,
+    pub rooms: Vec<Uuid>,
+}
+
+/// Deletes up to `limit` expired guests and their DM rooms, returning each
+/// guest and the rooms they were in (docs/design.md 11.3). Memberships and
+/// sessions go by cascade; a DM the guest was in is deleted outright, since a
+/// one-sided DM is meaningless. Runs in one transaction, so a guest is either
+/// fully gone or untouched.
+pub async fn delete_expired_guests(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ExpiredGuest>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM users
+        WHERE is_guest AND expires_at <= now()
+        ORDER BY expires_at
+        LIMIT $1
+        "#,
+        limit,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut expired = Vec::with_capacity(ids.len());
+    for user_id in ids {
+        let rooms: Vec<Uuid> = sqlx::query_scalar!(
+            "SELECT room_id FROM memberships WHERE user_id = $1",
+            user_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        // Drop the DM rooms the guest was in (cascading their memberships);
+        // their public and private memberships go when the user is deleted.
+        sqlx::query!(
+            r#"
+            DELETE FROM rooms
+            WHERE kind = 'dm'
+              AND id IN (SELECT room_id FROM memberships WHERE user_id = $1)
+            "#,
+            user_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!("DELETE FROM users WHERE id = $1", user_id)
+            .execute(&mut *tx)
+            .await?;
+        expired.push(ExpiredGuest { user_id, rooms });
+    }
+
+    tx.commit().await?;
+    Ok(expired)
+}
+
 /// Profiles for message authors and DM peers, at most 200 per call.
 pub async fn find_many(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<User>, sqlx::Error> {
     sqlx::query_as!(

@@ -1499,13 +1499,18 @@ socket is a field of a Redis hash (`conns:u:<user>`, `conns:ip:<ip>`) with its
 own TTL, admitted by a Lua script that adds the field only when both counts
 are under their cap, and refreshed on the presence loop's tick so a crashed
 instance's sockets expire within one TTL rather than leaking a slot. The one
-over the cap is closed with `4029`.
+over the cap is closed with `4029`. Guest cleanup (11.3): a job (every minute,
+one instance at a time by Redis lock) deletes expired guests and their DM
+rooms in one transaction — memberships and sessions go by cascade — and
+publishes a new `user.expired` frame to each room the guest was in, so open
+clients drop that guest's messages at once; the stored copies expire natively
+in Scylla and by session TTL in Redis.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Guest cleanup job, demo rooms and reset, admin command | 11.3, 11.4 | 4 |
+| Demo rooms and reset, admin command | 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |
 | `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |

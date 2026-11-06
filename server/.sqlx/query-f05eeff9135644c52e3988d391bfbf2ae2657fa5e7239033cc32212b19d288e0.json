@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM rooms\n            WHERE kind = 'dm'\n              AND id IN (SELECT room_id FROM memberships WHERE user_id = $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f05eeff9135644c52e3988d391bfbf2ae2657fa5e7239033cc32212b19d288e0"
+}

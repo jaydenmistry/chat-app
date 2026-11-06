@@ -14,6 +14,7 @@
 
 mod app;
 mod auth;
+mod cleanup;
 mod failures;
 mod features;
 mod github;
@@ -89,6 +90,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     limits::room_membership_is_capped,
     limits::sockets_are_capped_per_user,
     limits::sockets_are_capped_per_ip,
+    cleanup::expired_guests_and_their_dms_are_deleted,
+    cleanup::guest_cleanup_announces_user_expired,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

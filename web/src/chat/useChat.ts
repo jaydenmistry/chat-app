@@ -184,6 +184,9 @@ export function useChat(me: Me, onSessionEnded: () => void) {
         case "presence":
           dispatch({ type: "presence", userId: frame.user_id, status: frame.status });
           break;
+        case "user.expired":
+          dispatch({ type: "userExpired", roomId: frame.room_id, userId: frame.user_id });
+          break;
         case "room.joined":
           dispatch({ type: "roomJoined", room: frame.room });
           if (frame.room.dm_peer) dispatch({ type: "profiles", profiles: [frame.room.dm_peer] });

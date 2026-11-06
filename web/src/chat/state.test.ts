@@ -49,6 +49,18 @@ describe("chat state", () => {
     expect(s.notice).toBe("You were removed from alpha");
   });
 
+  it("drops an expired guest's messages but keeps everyone else's", () => {
+    let s = reducer(withRooms, {
+      type: "messages",
+      roomId: "r1",
+      messages: [msg("1", "r1", "bob"), msg("2", "r1", "me"), msg("3", "r1", "bob")],
+    });
+    s = reducer(s, { type: "userExpired", roomId: "r1", userId: "bob" });
+    expect(must(s.messages.r1).items.map((m) => m.id)).toEqual(["2"]);
+    // Nothing to drop in a room the guest wasn't in: no change.
+    expect(reducer(s, { type: "userExpired", roomId: "r2", userId: "bob" })).toBe(s);
+  });
+
   it("shows typing for a few seconds, and stops it when they send", () => {
     let s = reducer(withRooms, { type: "typing", roomId: "r1", userId: "bob", now: 1000 });
     expect(typers(s, "r1", "me", 1000)).toEqual(["bob"]);

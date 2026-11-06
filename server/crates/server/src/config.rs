@@ -49,6 +49,10 @@ pub struct Config {
     /// Every rate limit, built from the `RATE_*` variables (docs/design.md
     /// 11.1).
     pub rate_limits: RateLimits,
+    /// How often the guest-cleanup job runs (docs/design.md 11.3). Not
+    /// configurable by environment: the design is every minute. Tests shorten
+    /// it.
+    pub guest_cleanup_every: Duration,
     /// Worker-ID lease timings. Not configurable by environment: the
     /// defaults are the design. Tests shorten the quarantine.
     pub id_lease: crate::ids::LeaseTimings,
@@ -282,6 +286,7 @@ impl Config {
             max_sockets_per_user,
             max_sockets_per_ip,
             rate_limits,
+            guest_cleanup_every: Duration::from_secs(60),
             id_lease: crate::ids::LeaseTimings::default(),
             clock_offset_ms: 0,
         })
