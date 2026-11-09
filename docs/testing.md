@@ -14,6 +14,9 @@ cd web && pnpm test && pnpm lint && pnpm typecheck
 
 # End-to-end, against the running stack (`docker compose up` first)
 cd web && pnpm e2e
+
+# Load test, against a deployed stack (not the homelab); see load/README.md
+k6 run -e BASE_URL=https://chat.example.com load/chat.js
 ```
 
 If Docker Hub's anonymous pull limit blocks image pulls, set

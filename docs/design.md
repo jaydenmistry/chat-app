@@ -1540,6 +1540,9 @@ linger — and refuses a room that still exists. `room_changes` are left to thei
 7-day TTL. Deployment (14): a Dokploy compose stack (`deploy/dokploy.compose.yaml`
 — the one image, Postgres, Redis, Scylla, a one-shot migrate, and two server
 replicas behind Dokploy's own Traefik) and a deploy guide (`docs/deploy.md`).
+Load tests (14, decision 14): a k6 script (`load/chat.js`) drives the realtime
+write path under many virtual users; the numbers are still to be measured in a
+sandbox (only measured numbers go in this doc).
 
 Parts of those sections that are deliberately not built yet:
 
