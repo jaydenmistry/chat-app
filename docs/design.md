@@ -1518,13 +1518,17 @@ exec`, with no endpoint or UI: `ban <handle>` sets `banned_at` (login already
 refuses a banned account), revokes every session and closes its sockets; and
 `delete-message <room_id> <id>` soft-deletes a message through the same change
 feed and `message.deleted` fan-out as an author's own delete, briefly leasing a
-worker ID so the change has a real ID.
+worker ID so the change has a real ID. Graceful shutdown (13): SIGTERM makes
+`/readyz` fail and new `/ws` upgrades return 503 (the load balancer moves
+traffic away), then every open socket gets a `reconnect {retry_after_ms}` frame
+with the delay spread over 0–3 s, and after a short flush the sockets close with
+`1012`. Clients wait their delay, reconnect to the other instance and sync, so a
+restart doesn't send them all at the same moment.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |
 | `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |
 | Reclaiming Scylla space of deleted rooms | 4.2 | 4 |

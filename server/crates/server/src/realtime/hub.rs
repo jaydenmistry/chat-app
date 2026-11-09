@@ -376,6 +376,23 @@ impl Hub {
         }
     }
 
+    /// Queues a `reconnect` frame on every connection, each with its own delay
+    /// in `0..=max_retry_ms`, so a restart doesn't send every client to the
+    /// other instance at the same moment (docs/design.md 13). The caller closes
+    /// the sockets shortly after, once the frames have been written. Returns
+    /// how many were told.
+    pub fn drain(&self, max_retry_ms: u32) -> usize {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let t = self.read();
+        for conn in t.conns.values() {
+            let retry_after_ms = rng.random_range(0..=max_retry_ms);
+            let frame = encode(&ServerFrame::Reconnect { retry_after_ms });
+            let _ = conn.handle.outbound.try_send(frame);
+        }
+        t.conns.len()
+    }
+
     fn collect(&self, select: impl Fn(&Tables) -> Option<&HashSet<ConnId>>) -> Vec<Target> {
         let t = self.read();
         select(&t)

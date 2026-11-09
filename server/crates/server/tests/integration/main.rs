@@ -76,6 +76,7 @@ const TESTS: &[(&str, TestFn)] = tests![
     realtime::typing_crosses_instances,
     realtime::presence_crosses_instances,
     realtime::guest_expiry_ends_the_socket_and_the_messages,
+    realtime::graceful_shutdown_tells_clients_to_reconnect,
     features::edits_and_deletes_reach_everyone,
     features::edit_survives_a_replayed_insert,
     features::reactions_count_once_per_user,

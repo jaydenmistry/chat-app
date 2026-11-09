@@ -92,6 +92,7 @@ reply.
 | `room.left` | `room_id`, `reason`: `left`, `removed` or `deleted` | You're no longer in the room. Nothing more arrives for it |
 | `room.reset` | `room_id` | A demo room was reset (its day's messages are now below the history floor). Forget its loaded messages and reload from history |
 | `resync` | `reason` | This connection may have missed live messages. Run the sync procedure |
+| `reconnect` | `retry_after_ms` | The instance is shutting down. Reconnect (to another instance) after this delay; the socket closes with `1012` right after |
 | `ok` | `req_id` | An edit, delete or reaction was stored |
 | `message.updated` | `room_id`, `message_id`, `content`, `edited_at`, `version`, `change_id` | A message was edited. Apply only if `version` is higher than your copy's |
 | `message.deleted` | `room_id`, `message_id`, `version`, `change_id` | A message was deleted. Final: clear its content and reactions |

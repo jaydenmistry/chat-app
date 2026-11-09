@@ -160,6 +160,21 @@ describe("RealtimeClient", () => {
     expect(latest().sentOfType("message.send")[0]).toMatchObject({ idempotency_key: pending.key });
   });
 
+  it("uses the server's spread-out delay after a graceful restart", () => {
+    const c = client();
+    latest().serverSend(hello);
+    c.send("room", "in flight");
+    // The server is draining: it sends reconnect, then closes with 1012.
+    latest().serverSend({ type: "reconnect", retry_after_ms: 2000 });
+    latest().serverClose(1012);
+
+    // Not the 500 ms backoff (random() = 1) — it waits the server's delay.
+    vi.advanceTimersByTime(500);
+    expect(FakeSocket.all).toHaveLength(1);
+    vi.advanceTimersByTime(1500);
+    expect(FakeSocket.all).toHaveLength(2);
+  });
+
   it("backs off further after each failed attempt, up to 30 s", () => {
     client();
     latest().serverClose(1006);

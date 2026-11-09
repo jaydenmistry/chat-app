@@ -71,6 +71,13 @@ pub async fn upgrade(
     if !origin_allowed(&state.config.allowed_origins, headers.get(ORIGIN)) {
         return AppError::Forbidden("origin not allowed").into_response();
     }
+    // While draining, send new sockets to the other instance (docs/design.md 13).
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down").into_response();
+    }
     let session = match session {
         Ok(session) => session,
         Err(err) => return err.into_response(),

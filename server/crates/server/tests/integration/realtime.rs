@@ -507,3 +507,26 @@ pub async fn guest_expiry_ends_the_socket_and_the_messages(infra: Arc<Infra>) {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(history(&app, &ada, room.id).await.messages.is_empty());
 }
+
+/// Design 13: on graceful shutdown the instance tells each socket to reconnect
+/// after a spread-out delay, then closes it with 1012, so clients move to
+/// another instance without all hitting it at once.
+pub async fn graceful_shutdown_tells_clients_to_reconnect(infra: Arc<Infra>) {
+    let app = TestApp::spawn(&infra).await;
+    let ada = user(&app, "ada").await;
+    let mut socket = connect(&app, &ada.cookie).await;
+
+    app.stop().await;
+
+    let frame = socket
+        .expect("reconnect", |f| matches!(f, ServerFrame::Reconnect { .. }))
+        .await;
+    let ServerFrame::Reconnect { retry_after_ms } = frame else {
+        unreachable!()
+    };
+    assert!(
+        retry_after_ms <= 3_000,
+        "retry is spread over a few seconds"
+    );
+    assert_eq!(socket.closed().await, Some(close::RESTARTING));
+}

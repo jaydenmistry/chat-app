@@ -45,6 +45,14 @@ use crate::{
 /// At most this many Argon2 hashes run at once (each uses 19 MiB).
 const MAX_CONCURRENT_HASHES: usize = 4;
 
+/// On shutdown, clients are told to reconnect after a random delay in
+/// `0..=RECONNECT_SPREAD_MS`, so a restart doesn't send them all to the other
+/// instance at once (docs/design.md 13).
+const RECONNECT_SPREAD_MS: u32 = 3_000;
+/// How long to let the writers flush the `reconnect` frames before closing the
+/// sockets. The frames are tiny; this is comfortably enough.
+const RECONNECT_FLUSH: Duration = Duration::from_millis(250);
+
 /// Runs the server on `listener` until `shutdown` completes.
 pub async fn serve(
     config: Config,
@@ -131,8 +139,14 @@ pub async fn serve(
         shutdown.await;
         state.shutting_down.store(true, Ordering::Relaxed);
         tracing::info!("shutting down");
-        // Clients reconnect, to another instance behind the load balancer,
-        // and sync. (Phase 4 adds the drain and the `reconnect` frame.)
+        // `/readyz` now fails and new `/ws` upgrades are refused, so the load
+        // balancer moves traffic away. Tell the open sockets to reconnect
+        // (spread over a few seconds), give the writers a moment to send those
+        // frames, then close them with `1012` (docs/design.md 13). The clients
+        // reconnect to another instance and sync.
+        let told = state.hub.drain(RECONNECT_SPREAD_MS);
+        tracing::info!(connections = told, "told clients to reconnect");
+        tokio::time::sleep(RECONNECT_FLUSH).await;
         state
             .hub
             .close_all((protocol::frames::close::RESTARTING, "server restarting"));

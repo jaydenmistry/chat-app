@@ -87,6 +87,8 @@ export class RealtimeClient {
   private readonly calls = new Map<string, { resolve: (result: CallResult) => void; timer: Timer }>();
   private watched: string[] = [];
   private presence: PresenceState = "active";
+  /** Set by a `reconnect` frame: the delay the server wants before we retry. */
+  private serverRetryMs: number | null = null;
 
   constructor(options: RealtimeOptions) {
     this.options = {
@@ -279,6 +281,11 @@ export class RealtimeClient {
       case "ok":
         this.settle(frame.req_id, { ok: true });
         return;
+      case "reconnect":
+        // The server is draining for a restart; it closes the socket next.
+        // Use its spread-out delay for the reconnect instead of our backoff.
+        this.serverRetryMs = frame.retry_after_ms;
+        return;
       case "error": {
         if (frame.req_id && this.settle(frame.req_id, { ok: false, code: frame.code, message: frame.message })) {
           return;
@@ -340,6 +347,16 @@ export class RealtimeClient {
     if (this.stopped) return;
     if (code === CLOSE_SESSION_ENDED) {
       this.setState("ended");
+      return;
+    }
+    // A graceful restart already handed us a spread-out delay; use it and
+    // don't count this as a failed attempt.
+    const serverRetry = this.serverRetryMs;
+    this.serverRetryMs = null;
+    if (serverRetry !== null) {
+      this.attempt = 0;
+      this.setState("reconnecting");
+      this.reconnectTimer = setTimeout(() => this.connect(), serverRetry);
       return;
     }
     // Full jitter: spread reconnects so a restarted instance's clients don't

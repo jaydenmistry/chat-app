@@ -195,6 +195,12 @@ pub enum ServerFrame {
     /// sync procedure (docs/protocol.md) for every loaded room.
     #[serde(rename = "resync")]
     Resync { reason: String },
+    /// This instance is shutting down. Reconnect (to another instance) after
+    /// `retry_after_ms`, which the server spreads over a few seconds so they
+    /// don't all arrive at once (docs/design.md 13). The socket closes with
+    /// `1012` right after.
+    #[serde(rename = "reconnect")]
+    Reconnect { retry_after_ms: u32 },
 }
 
 /// Stable error codes for `error` frames.
