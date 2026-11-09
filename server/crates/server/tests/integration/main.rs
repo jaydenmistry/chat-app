@@ -24,6 +24,7 @@ mod health;
 mod ids;
 mod infra;
 mod limits;
+mod maintenance;
 mod messages;
 mod migrations;
 mod realtime;
@@ -99,6 +100,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     demo::demo_rooms_are_seeded_and_reset,
     admin::admin_bans_an_account,
     admin::admin_deletes_a_message,
+    maintenance::reindex_rebuilds_search_entries,
+    maintenance::reclaim_frees_a_deleted_rooms_scylla_space,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

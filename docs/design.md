@@ -1530,12 +1530,17 @@ Prometheus recorder rendered at `GET /metrics` on the app port (the proxy keeps
 it internal), with `ws_connections_open`, `messages_sent_total`,
 `rate_limit_rejections_total{action}`, `slow_consumer_disconnects_total`,
 `index_lag_seconds` and `worker_id_fenced` wired; the per-call timing histograms
-are still to come (13).
+are still to come (13). Two maintenance commands (10, 4.2), run with `docker
+exec`: `server reindex --room <id>` re-enqueues every message of a room onto the
+search stream so the indexers rebuild its entries (also recovering entries
+trimmed from the stream while no indexer ran); `server reclaim --room <id>`
+deletes the Scylla partitions (messages, reactions, `room_buckets`) of a room
+already removed from Postgres — their rows have no TTL and would otherwise
+linger — and refuses a room that still exists. `room_changes` are left to their
+7-day TTL.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
 | Per-call timing histograms: `fanout_latency_seconds`, `{redis,scylla,pg}_*_seconds` | 13 | 4 |
-| `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |
-| Reclaiming Scylla space of deleted rooms | 4.2 | 4 |

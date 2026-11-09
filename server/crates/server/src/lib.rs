@@ -11,6 +11,7 @@ pub mod demo;
 pub mod healthcheck;
 pub mod http;
 pub mod ids;
+pub mod maintenance;
 pub mod observe;
 pub mod permissions;
 pub mod rate_limit;

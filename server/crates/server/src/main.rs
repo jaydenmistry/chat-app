@@ -3,13 +3,15 @@
 //!   server serve        run the server (the default)
 //!   server migrate      apply database migrations, then exit
 //!   server admin ...    operator actions (ban an account, delete a message)
+//!   server reindex ...  rebuild a room's search entries
+//!   server reclaim ...  delete a deleted room's Scylla partitions
 //!   server healthcheck  exit 0 if the local server is ready
 
 use std::process::ExitCode;
 
 use server::{config::Config, telemetry};
 
-const USAGE: &str = "usage: server [serve | migrate | admin | healthcheck]";
+const USAGE: &str = "usage: server [serve | migrate | admin | reindex | reclaim | healthcheck]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,6 +34,9 @@ fn main() -> ExitCode {
         ),
         Some("admin") => run(config, move |config| async move {
             server::admin::run(&config, &args[1..]).await
+        }),
+        Some("reindex" | "reclaim") => run(config, move |config| async move {
+            server::maintenance::run(&config, &args).await
         }),
         Some("healthcheck") => {
             if server::healthcheck::check(config.bind_addr) {
