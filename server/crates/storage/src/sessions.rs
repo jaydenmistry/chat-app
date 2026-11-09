@@ -90,6 +90,41 @@ pub async fn revoke(
     Ok(row.and_then(|r| r.token_hash.try_into().ok()))
 }
 
+/// A session revoked in bulk: its ID (to announce) and token hash (to delete
+/// the live copy).
+pub struct RevokedSession {
+    pub id: Uuid,
+    pub token_hash: TokenHash,
+}
+
+/// Revokes every active session of a user and returns them, so the caller can
+/// delete the live copies and close the sockets. Used when banning an account.
+pub async fn revoke_all(pool: &PgPool, user_id: Uuid) -> Result<Vec<RevokedSession>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        UPDATE sessions SET revoked_at = now()
+        WHERE user_id = $1 AND revoked_at IS NULL
+        RETURNING id, token_hash
+        "#,
+        user_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        // The CHECK constraint guarantees 32 bytes.
+        .filter_map(|r| {
+            r.token_hash
+                .try_into()
+                .ok()
+                .map(|token_hash| RevokedSession {
+                    id: r.id,
+                    token_hash,
+                })
+        })
+        .collect())
+}
+
 /// Records that the session was used, and its new expiry for sliding sessions.
 pub async fn touch(
     pool: &PgPool,

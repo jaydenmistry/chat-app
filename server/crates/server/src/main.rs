@@ -2,16 +2,17 @@
 //!
 //!   server serve        run the server (the default)
 //!   server migrate      apply database migrations, then exit
+//!   server admin ...    operator actions (ban an account, delete a message)
 //!   server healthcheck  exit 0 if the local server is ready
 
 use std::process::ExitCode;
 
 use server::{config::Config, telemetry};
 
-const USAGE: &str = "usage: server [serve | migrate | healthcheck]";
+const USAGE: &str = "usage: server [serve | migrate | admin | healthcheck]";
 
 fn main() -> ExitCode {
-    let command = std::env::args().nth(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(err) => {
@@ -20,7 +21,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match command.as_deref() {
+    match args.first().map(String::as_str) {
         None | Some("serve") => run(config, |config| async move {
             let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
             server::serve(config, listener, server::shutdown_signal()).await
@@ -29,6 +30,9 @@ fn main() -> ExitCode {
             config,
             |config| async move { server::migrate(&config).await },
         ),
+        Some("admin") => run(config, move |config| async move {
+            server::admin::run(&config, &args[1..]).await
+        }),
         Some("healthcheck") => {
             if server::healthcheck::check(config.bind_addr) {
                 ExitCode::SUCCESS

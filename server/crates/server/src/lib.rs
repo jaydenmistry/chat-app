@@ -3,6 +3,7 @@
 //! `main.rs` is a thin command-line wrapper. Everything lives in this library
 //! so integration tests can start real server instances in-process.
 
+pub mod admin;
 pub mod auth;
 pub mod cleanup;
 pub mod config;

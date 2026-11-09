@@ -12,6 +12,7 @@
 //! Scylla partitions are random per test, so the shared instances don't leak
 //! state between tests.
 
+mod admin;
 mod app;
 mod auth;
 mod cleanup;
@@ -94,6 +95,8 @@ const TESTS: &[(&str, TestFn)] = tests![
     cleanup::expired_guests_and_their_dms_are_deleted,
     cleanup::guest_cleanup_announces_user_expired,
     demo::demo_rooms_are_seeded_and_reset,
+    admin::admin_bans_an_account,
+    admin::admin_deletes_a_message,
     auth::signup_creates_account_and_session,
     auth::signup_rejects_taken_email_and_handle,
     auth::signup_validates_fields,

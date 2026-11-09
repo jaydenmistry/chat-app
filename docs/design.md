@@ -1512,13 +1512,18 @@ it: it writes the seed messages, raises `history_floor` above them so the
 previous day falls out of history and search, sets `message_expiry_at` to the
 next 04:00 UTC so the day's messages expire natively, and publishes a new
 `room.reset` frame so open clients reload. Nothing is deleted. A fresh deploy's
-rooms have a null expiry, so the first pass seeds them.
+rooms have a null expiry, so the first pass seeds them. The operator admin
+command (11.4) is a `server admin` subcommand, run on the host with `docker
+exec`, with no endpoint or UI: `ban <handle>` sets `banned_at` (login already
+refuses a banned account), revokes every session and closes its sockets; and
+`delete-message <room_id> <id>` soft-deletes a message through the same change
+feed and `message.deleted` fan-out as an author's own delete, briefly leasing a
+worker ID so the change has a real ID.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Admin command (delete a message, ban an account) | 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |
 | `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |

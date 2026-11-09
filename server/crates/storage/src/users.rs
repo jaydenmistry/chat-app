@@ -210,6 +210,16 @@ pub async fn find_by_handle(pool: &PgPool, handle: &str) -> Result<Option<User>,
     .await
 }
 
+/// Suspends an account: it can no longer sign in (checked at login) and its
+/// sessions are ended separately (docs/design.md 11.4). Idempotent; re-banning
+/// just moves the timestamp. Returns false if there is no such user.
+pub async fn ban(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!("UPDATE users SET banned_at = now() WHERE id = $1", user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// An expired guest the cleanup job removed, with the rooms they were in at
 /// the time (collected before the delete, so clients can be told).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -58,18 +58,7 @@ pub fn notify(state: &AppState, room_id: Uuid, message_id: MessageId) {
     tokio::spawn(async move {
         let mut delay = Duration::from_millis(200);
         for attempt in 1..=5 {
-            let added: redis::RedisResult<String> = redis::cmd("XADD")
-                .arg(STREAM)
-                .arg("MAXLEN")
-                .arg("~")
-                .arg(MAX_STREAM_LEN)
-                .arg("*")
-                .arg("room_id")
-                .arg(room_id.to_string())
-                .arg("message_id")
-                .arg(message_id.to_string())
-                .query_async(&mut redis)
-                .await;
+            let added = enqueue(&mut redis, room_id, message_id).await;
             match added {
                 Ok(_) => return,
                 Err(err) if attempt == 5 => {
@@ -82,6 +71,27 @@ pub fn notify(state: &AppState, room_id: Uuid, message_id: MessageId) {
             }
         }
     });
+}
+
+/// Adds one index entry (room and message IDs only; the indexer reads the
+/// content from Scylla). One attempt, for callers that handle retries.
+pub async fn enqueue(
+    redis: &mut redis::aio::ConnectionManager,
+    room_id: Uuid,
+    message_id: MessageId,
+) -> redis::RedisResult<String> {
+    redis::cmd("XADD")
+        .arg(STREAM)
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(MAX_STREAM_LEN)
+        .arg("*")
+        .arg("room_id")
+        .arg(room_id.to_string())
+        .arg("message_id")
+        .arg(message_id.to_string())
+        .query_async(redis)
+        .await
 }
 
 pub async fn run_indexer(state: AppState, mut shutdown: watch::Receiver<bool>) {
