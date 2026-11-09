@@ -1537,7 +1537,9 @@ trimmed from the stream while no indexer ran); `server reclaim --room <id>`
 deletes the Scylla partitions (messages, reactions, `room_buckets`) of a room
 already removed from Postgres — their rows have no TTL and would otherwise
 linger — and refuses a room that still exists. `room_changes` are left to their
-7-day TTL.
+7-day TTL. Deployment (14): a Dokploy compose stack (`deploy/dokploy.compose.yaml`
+— the one image, Postgres, Redis, Scylla, a one-shot migrate, and two server
+replicas behind Dokploy's own Traefik) and a deploy guide (`docs/deploy.md`).
 
 Parts of those sections that are deliberately not built yet:
 

@@ -1,0 +1,109 @@
+# Production stack for Dokploy (docs/deploy.md).
+#
+# Dokploy builds the image from deploy/Dockerfile, runs this stack, and puts
+# its own Traefik in front: point a domain at the `server` service on port
+# 8080 in the Dokploy UI (round robin across the replicas, no sticky sessions).
+# Ingress/TLS is Dokploy's job and out of scope here (Phase 0).
+#
+# Set the secrets and the public URL as environment variables in Dokploy; the
+# rest have sensible defaults. Nothing is published to the host — every service
+# is reached over the compose network only.
+
+name: chat
+
+x-server: &server
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  image: chat-app:latest
+  restart: unless-stopped
+  environment:
+    # The origin browsers load the app from, e.g. https://chat.example.com.
+    PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-${PUBLIC_URL}}
+    LOG_FORMAT: json
+    RUST_LOG: ${RUST_LOG:-info}
+    DATABASE_URL: postgres://${POSTGRES_USER:-chat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chat}
+    REDIS_URL: redis://redis:6379
+    SCYLLA_NODES: scylla:9042
+    SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-chat}
+    SCYLLA_REPLICATION_FACTOR: ${SCYLLA_REPLICATION_FACTOR:-1}
+    # The real client IP arrives in this header from Cloudflare/Traefik. Safe
+    # only because 8080 is not reachable except through the proxy (deploy.md).
+    CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-CF-Connecting-IP}
+    GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+    GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-chat}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8.10.3-alpine
+    restart: unless-stopped
+    # AOF so sessions and idempotency keys survive a restart; noeviction so
+    # they are never dropped to free memory.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  scylla:
+    image: scylladb/scylla:2026.3.4
+    restart: unless-stopped
+    # Developer mode skips the XFS and tuned-I/O checks a single container on a
+    # general-purpose volume won't pass. Raise --smp/--memory to fit the host.
+    command: ["--smp", "${SCYLLA_SMP:-2}", "--memory", "${SCYLLA_MEMORY:-4G}", "--overprovisioned", "1", "--developer-mode", "1"]
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+  # Applies Postgres and Scylla migrations once, then exits. The server
+  # services wait for it to complete successfully.
+  migrate:
+    <<: *server
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+
+  # Two identical instances. Point the Dokploy domain here on port 8080; its
+  # Traefik load-balances them with health checks on /readyz.
+  server:
+    <<: *server
+    expose:
+      - "8080"
+    deploy:
+      replicas: 2
+
+volumes:
+  postgres-data:
+  redis-data:
+  scylla-data:
