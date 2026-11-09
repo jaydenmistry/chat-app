@@ -242,7 +242,13 @@ async fn handle(state: &AppState, entry: &StreamId) -> bool {
     )
     .await;
     match indexed {
-        Ok(()) => true,
+        Ok(()) => {
+            // How far behind the indexer is: the age of the entry it just
+            // handled (docs/design.md 13).
+            let lag = entry_age(&entry.id, state.ids.unix_ms());
+            crate::observe::index_lag(lag.as_secs_f64());
+            true
+        }
         Err(err) => {
             tracing::debug!(error = %err, "search indexer can't write postgres");
             false

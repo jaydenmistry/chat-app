@@ -155,11 +155,10 @@ pub async fn enforce(
 }
 
 /// Counts a rejection for metrics (docs/design.md 13:
-/// `rate_limit_rejections_total{action}`). The Prometheus recorder is wired in
-/// the metrics piece of Phase 4; until then this records the rejection in the
-/// logs and keeps every call site in place.
+/// `rate_limit_rejections_total{action}`).
 pub fn record_rejection(action: &str) {
     tracing::debug!(action, "rate limited");
+    crate::observe::rate_limit_rejected(action);
 }
 
 #[cfg(test)]

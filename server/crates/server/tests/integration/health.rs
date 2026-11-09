@@ -75,3 +75,46 @@ pub async fn unknown_api_routes_are_json_404(infra: Arc<Infra>) {
     let resp = app.client.post(app.url("/api/nope")).send().await.unwrap();
     expect_error(resp, StatusCode::NOT_FOUND, ErrorCode::NotFound).await;
 }
+
+/// The value of an unlabelled metric line (`name value`), or 0 if absent.
+fn metric_value(body: &str, name: &str) -> f64 {
+    body.lines()
+        .find(|l| !l.starts_with('#') && l.starts_with(name))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// `/metrics` renders Prometheus text, and the counters move with real
+/// activity (docs/design.md 13). The recorder is process-wide, shared by every
+/// concurrent test, so this asserts lower bounds its own activity guarantees.
+pub async fn metrics_report_activity(infra: Arc<Infra>) {
+    let app = TestApp::spawn(&infra).await;
+    let ada = crate::rooms::user(&app, "ada").await;
+    let room = app.create_room(&ada, "Metrics", "public").await;
+    let mut socket = crate::ws::connect(&app, &ada.cookie).await;
+    socket.send_message(room.id, "counted").await;
+
+    let body = app
+        .get("/metrics")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.contains("ws_connections_open"),
+        "the gauge is registered:\n{body}"
+    );
+    assert!(
+        metric_value(&body, "ws_connections_open") >= 1.0,
+        "this test's socket is counted open"
+    );
+    assert!(
+        metric_value(&body, "messages_sent_total") >= 1.0,
+        "this test's message is counted sent"
+    );
+
+    app.stop().await;
+}

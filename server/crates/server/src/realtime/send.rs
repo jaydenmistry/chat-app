@@ -323,6 +323,9 @@ pub async fn send(
             return error(req_id, FrameErrorCode::Unavailable, "try again");
         }
     }
+    if !duplicate {
+        crate::observe::message_sent();
+    }
 
     // An ack this long after the ID was assigned (a retry of a slow first
     // attempt) may be behind the resume window of a client that was away:

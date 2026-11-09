@@ -11,6 +11,7 @@ pub mod demo;
 pub mod healthcheck;
 pub mod http;
 pub mod ids;
+pub mod observe;
 pub mod permissions;
 pub mod rate_limit;
 pub mod realtime;
@@ -59,6 +60,7 @@ pub async fn serve(
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    observe::install();
     let stores = startup::connect(&config).await?;
     let http = reqwest::Client::builder()
         .user_agent("chat-app")

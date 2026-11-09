@@ -77,6 +77,9 @@ pub fn router(state: AppState) -> Router {
         .route("/ws", get(crate::realtime::gateway::upgrade))
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        // Prometheus scrape. Served on the app port, so the reverse proxy must
+        // keep it internal (docs/design.md 13).
+        .route("/metrics", get(crate::observe::render))
         .nest("/api", api);
 
     if let Some(dir) = &state.config.static_dir {

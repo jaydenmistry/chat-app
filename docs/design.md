@@ -983,19 +983,21 @@ not belong to its owner.
 taken from the header) in its span. Every socket gets a `conn_id` span field,
 so all log lines for one connection can be filtered together.
 
-**Metrics** (`/metrics` on port 9090):
+**Metrics** are a Prometheus recorder rendered at `GET /metrics`. This is
+served on the app port, not a separate 9090 (one less listener), so the reverse
+proxy must keep `/metrics` internal — the deploy guide says so. Wired:
 
-- `ws_connections_open`
+- `ws_connections_open` (gauge)
 - `messages_sent_total`
-- `fanout_latency_seconds` (histogram, publish to `try_send`; the publish
-  time travels in the Redis payload)
-- `redis_command_seconds{cmd}`
-- `scylla_query_seconds{query}`
-- `pg_query_seconds{query}`
 - `rate_limit_rejections_total{action}`
 - `slow_consumer_disconnects_total`
-- `index_lag_seconds`
-- `worker_id_fenced` (gauge)
+- `index_lag_seconds` (gauge: the age of the entry the indexer last handled)
+- `worker_id_fenced` (gauge: 1 while this instance has no usable lease)
+
+Still to wire (per-call timing, more invasive): `fanout_latency_seconds`
+(publish to `try_send`, the publish time carried in the Redis payload),
+`redis_command_seconds{cmd}`, `scylla_query_seconds{query}`,
+`pg_query_seconds{query}`.
 
 **Health.** `/healthz` returns 200 if the process is up. `/readyz` returns
 200 only if Postgres, Redis and Scylla answer within 1 s, a worker ID lease
@@ -1523,12 +1525,17 @@ worker ID so the change has a real ID. Graceful shutdown (13): SIGTERM makes
 traffic away), then every open socket gets a `reconnect {retry_after_ms}` frame
 with the delay spread over 0–3 s, and after a short flush the sockets close with
 `1012`. Clients wait their delay, reconnect to the other instance and sync, so a
-restart doesn't send them all at the same moment.
+restart doesn't send them all at the same moment. Metrics (13): a process-wide
+Prometheus recorder rendered at `GET /metrics` on the app port (the proxy keeps
+it internal), with `ws_connections_open`, `messages_sent_total`,
+`rate_limit_rejections_total{action}`, `slow_consumer_disconnects_total`,
+`index_lag_seconds` and `worker_id_fenced` wired; the per-call timing histograms
+are still to come (13).
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Metrics, including `index_lag_seconds` | 10, 13 | 4 |
+| Per-call timing histograms: `fanout_latency_seconds`, `{redis,scylla,pg}_*_seconds` | 13 | 4 |
 | `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |
 | Reclaiming Scylla space of deleted rooms | 4.2 | 4 |

@@ -49,6 +49,7 @@ const TESTS: &[(&str, TestFn)] = tests![
     health::readyz_fails_when_postgres_is_down,
     health::request_ids_are_assigned_and_propagated,
     health::unknown_api_routes_are_json_404,
+    health::metrics_report_activity,
     migrations::scylla_migrations_apply_once,
     ids::instances_get_distinct_worker_ids,
     ids::a_stolen_lease_stops_ids_and_moves_on,

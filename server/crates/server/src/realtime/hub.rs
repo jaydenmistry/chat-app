@@ -413,6 +413,7 @@ impl Hub {
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::info!(%conn_id, "closing slow connection");
                     let _ = closer.send(Some((close::TOO_SLOW, "too slow")));
+                    crate::observe::slow_consumer_disconnected();
                     delivered.too_slow += 1;
                 }
                 // The connection is shutting down already.

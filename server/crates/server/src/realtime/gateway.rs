@@ -176,6 +176,7 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
     };
     let _ = outbound.try_send(encode(&hello));
     presence::connected(&state, ctx.user_id, ctx.conn_id).await;
+    crate::observe::connection_opened();
     tracing::info!(rooms = rooms.len(), "connected");
 
     let writer = tokio::spawn(write_loop(sink, queue, closed.clone()));
@@ -189,6 +190,7 @@ async fn serve(state: AppState, socket: WebSocket, ctx: ConnCtx) {
     state.subscriber.release(state.hub.unregister(ctx.conn_id));
     conn_cap::release(&state, ctx.conn_id, ctx.user_id, ctx.ip).await;
     presence::disconnected(&state, ctx.user_id, ctx.conn_id).await;
+    crate::observe::connection_closed();
     tracing::info!("disconnected");
 }
 

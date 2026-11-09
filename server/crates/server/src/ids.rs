@@ -265,6 +265,8 @@ pub async fn run_lease(
             .await
             .unwrap_or(None);
         tracing::info!(worker, "acquired worker ID; in quarantine");
+        // Not issuing IDs until quarantine clears.
+        crate::observe::worker_id_fenced(true);
         // The lease is renewed from the start; quarantine only delays using
         // it. (Waiting out the quarantine without renewing would let the key
         // expire, since the quarantine is as long as the TTL.)
@@ -286,6 +288,7 @@ pub async fn run_lease(
                 Ok((0, _, _)) => {
                     tracing::warn!(worker, "worker ID lease lost; stopped issuing IDs");
                     generator.drop_lease();
+                    crate::observe::worker_id_fenced(true);
                     continue 'acquire;
                 }
                 Ok((_, seconds, micros)) => {
@@ -300,11 +303,14 @@ pub async fn run_lease(
                             "clock differs from Redis TIME; stopped issuing IDs"
                         );
                         generator.suspend();
+                        crate::observe::worker_id_fenced(true);
                     } else if installed {
                         generator.extend(valid_until);
+                        crate::observe::worker_id_fenced(false);
                     } else if Instant::now() >= usable_from {
                         generator.install(worker, hwm, valid_until);
                         installed = true;
+                        crate::observe::worker_id_fenced(false);
                         tracing::info!(worker, "issuing message IDs");
                     }
                 }
