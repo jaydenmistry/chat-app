@@ -1504,13 +1504,21 @@ one instance at a time by Redis lock) deletes expired guests and their DM
 rooms in one transaction — memberships and sessions go by cascade — and
 publishes a new `user.expired` frame to each room the guest was in, so open
 clients drop that guest's messages at once; the stored copies expire natively
-in Scylla and by session TTL in Redis.
+in Scylla and by session TTL in Redis. Demo rooms (11.4): a migration seeds a
+system user and three public rooms (`general`, `rust`, `random`) it owns, with
+`is_demo = true`. A reset job polls (one instance at a time by Redis lock) for
+a demo room whose day has ended — `message_expiry_at` null or past — and resets
+it: it writes the seed messages, raises `history_floor` above them so the
+previous day falls out of history and search, sets `message_expiry_at` to the
+next 04:00 UTC so the day's messages expire natively, and publishes a new
+`room.reset` frame so open clients reload. Nothing is deleted. A fresh deploy's
+rooms have a null expiry, so the first pass seeds them.
 
 Parts of those sections that are deliberately not built yet:
 
 | Piece | Section | Phase |
 |---|---|---|
-| Demo rooms and reset, admin command | 11.4 | 4 |
+| Admin command (delete a message, ban an account) | 11.4 | 4 |
 | Graceful drain and the `reconnect` frame (today: sockets close with `1012`) | 13 | 4 |
 | Metrics, including `index_lag_seconds` | 10, 13 | 4 |
 | `server reindex --room <id>`, to rebuild a room's search entries (also recovers entries trimmed from the stream while no indexer ran) | 10 | 4 |

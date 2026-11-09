@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod cleanup;
 pub mod config;
+pub mod demo;
 pub mod healthcheck;
 pub mod http;
 pub mod ids;
@@ -112,6 +113,11 @@ pub async fn serve(
         state.config.guest_cleanup_every,
         background_stopped.clone(),
     ));
+    let demo_task = tokio::spawn(demo::run_background(
+        state.clone(),
+        state.config.demo_reset_every,
+        background_stopped.clone(),
+    ));
     let indexer_task = tokio::spawn(search::run_indexer(state.clone(), background_stopped));
     let app = http::router(state.clone());
     tracing::info!(addr = %listener.local_addr()?, %instance_id, "listening");
@@ -142,6 +148,7 @@ pub async fn serve(
             subscriber_task,
             presence_task,
             cleanup_task,
+            demo_task,
             indexer_task
         );
     })

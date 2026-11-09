@@ -61,6 +61,14 @@ describe("chat state", () => {
     expect(reducer(s, { type: "userExpired", roomId: "r2", userId: "bob" })).toBe(s);
   });
 
+  it("forgets a reset room's messages so they reload from the new floor", () => {
+    let s = reducer(withRooms, { type: "messages", roomId: "r1", messages: [msg("1"), msg("2")] });
+    s = reducer(s, { type: "roomReset", roomId: "r1" });
+    expect(s.messages.r1).toBeUndefined();
+    // A reset for a room with nothing loaded is a no-op.
+    expect(reducer(s, { type: "roomReset", roomId: "r1" })).toBe(s);
+  });
+
   it("shows typing for a few seconds, and stops it when they send", () => {
     let s = reducer(withRooms, { type: "typing", roomId: "r1", userId: "bob", now: 1000 });
     expect(typers(s, "r1", "me", 1000)).toEqual(["bob"]);

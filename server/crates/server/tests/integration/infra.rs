@@ -208,6 +208,10 @@ impl Infra {
             // Long by default so ordinary tests don't run it; the guest
             // cleanup test shortens it with `spawn_with`.
             guest_cleanup_every: Duration::from_secs(3600),
+            // Long by default so ordinary tests don't reset the demo rooms
+            // (whose IDs are fixed and shared across tests); the demo test
+            // shortens it with `spawn_with`.
+            demo_reset_every: Duration::from_secs(3600),
             // No quarantine: every test app would otherwise wait 15 s. The
             // quarantine only matters when Redis loses its data.
             id_lease: server::ids::LeaseTimings {

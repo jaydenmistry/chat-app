@@ -186,6 +186,11 @@ pub enum ServerFrame {
     RoomJoined { room: RoomInfo },
     #[serde(rename = "room.left")]
     RoomLeft { room_id: Uuid, reason: LeaveReason },
+    /// A demo room was reset (docs/design.md 11.4): the previous day's
+    /// messages are now below the room's history floor. Drop the room's loaded
+    /// messages and reload; the new seed messages come from history.
+    #[serde(rename = "room.reset")]
+    RoomReset { room_id: Uuid },
     /// Live delivery to this connection may have missed messages. Run the
     /// sync procedure (docs/protocol.md) for every loaded room.
     #[serde(rename = "resync")]

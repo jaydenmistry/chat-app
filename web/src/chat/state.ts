@@ -131,6 +131,8 @@ export type Action =
   | { type: "profiles"; profiles: UserProfile[] }
   /** A guest expired: drop their messages from this room. */
   | { type: "userExpired"; roomId: string; userId: string }
+  /** A demo room reset: forget its loaded messages so they reload from the new floor. */
+  | { type: "roomReset"; roomId: string }
   | { type: "notice"; notice: string | null };
 
 const emptyRoom: RoomMessages = { items: [], olderCursor: null, loaded: false, changeCursor: null };
@@ -408,6 +410,15 @@ export function reducer(state: ChatState, action: Action): ChatState {
       const items = room.items.filter((m) => m.author_id !== action.userId);
       if (items.length === room.items.length) return state;
       return { ...state, messages: { ...state.messages, [action.roomId]: { ...room, items } } };
+    }
+    case "roomReset": {
+      if (!state.messages[action.roomId]) return state;
+      // Drop the loaded page entirely; the active-room effect refetches it,
+      // now starting from the raised history floor with the new seed messages.
+      const messages = Object.fromEntries(
+        Object.entries(state.messages).filter(([id]) => id !== action.roomId),
+      );
+      return { ...state, messages };
     }
     case "notice":
       return { ...state, notice: action.notice };

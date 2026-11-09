@@ -371,6 +371,50 @@ pub async fn delete_room(pool: &PgPool, room_id: Uuid) -> Result<Vec<Uuid>, sqlx
     Ok(members)
 }
 
+/// A demo room due for a reset (docs/design.md 11.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueDemoRoom {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// Demo rooms whose current day has ended (or that have never been reset).
+/// After [`apply_demo_reset`] sets `message_expiry_at` to the next reset, a
+/// room stops being due until then, so the job is idempotent per day.
+pub async fn due_demo_rooms(pool: &PgPool) -> Result<Vec<DueDemoRoom>, sqlx::Error> {
+    sqlx::query_as!(
+        DueDemoRoom,
+        r#"
+        SELECT id, name AS "name!"
+        FROM rooms
+        WHERE is_demo AND (message_expiry_at IS NULL OR message_expiry_at <= now())
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Raises a demo room's history floor and sets when its new messages expire.
+/// Written after the seed messages, so a crash between the two leaves the room
+/// still due and the next pass redoes it (docs/design.md 11.4).
+pub async fn apply_demo_reset(
+    pool: &PgPool,
+    room_id: Uuid,
+    history_floor: i64,
+    message_expiry_at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE rooms SET history_floor = $2, message_expiry_at = $3 WHERE id = $1",
+        room_id,
+        history_floor,
+        message_expiry_at,
+    )
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberRow {
     pub user_id: Uuid,

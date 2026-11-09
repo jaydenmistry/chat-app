@@ -53,6 +53,11 @@ pub struct Config {
     /// configurable by environment: the design is every minute. Tests shorten
     /// it.
     pub guest_cleanup_every: Duration,
+    /// How often the demo-reset job checks for rooms whose day has ended
+    /// (docs/design.md 11.4). Not configurable by environment: the reset time
+    /// (04:00 UTC) is fixed; this is just the poll granularity. Tests shorten
+    /// it.
+    pub demo_reset_every: Duration,
     /// Worker-ID lease timings. Not configurable by environment: the
     /// defaults are the design. Tests shorten the quarantine.
     pub id_lease: crate::ids::LeaseTimings,
@@ -287,6 +292,7 @@ impl Config {
             max_sockets_per_ip,
             rate_limits,
             guest_cleanup_every: Duration::from_secs(60),
+            demo_reset_every: Duration::from_secs(60),
             id_lease: crate::ids::LeaseTimings::default(),
             clock_offset_ms: 0,
         })

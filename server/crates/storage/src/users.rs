@@ -8,6 +8,11 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// The system account that owns the demo rooms and authors their seed
+/// messages (docs/design.md 11.4). Seeded by the `demo_rooms` migration; this
+/// constant must match the ID there.
+pub const SYSTEM_USER_ID: Uuid = Uuid::from_u128(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
     pub id: Uuid,

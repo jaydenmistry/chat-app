@@ -187,6 +187,11 @@ export function useChat(me: Me, onSessionEnded: () => void) {
         case "user.expired":
           dispatch({ type: "userExpired", roomId: frame.room_id, userId: frame.user_id });
           break;
+        case "room.reset":
+          dispatch({ type: "roomReset", roomId: frame.room_id });
+          // Refresh the room list so the raised floor and unread count follow.
+          void loadRooms();
+          break;
         case "room.joined":
           dispatch({ type: "roomJoined", room: frame.room });
           if (frame.room.dm_peer) dispatch({ type: "profiles", profiles: [frame.room.dm_peer] });
@@ -210,7 +215,7 @@ export function useChat(me: Me, onSessionEnded: () => void) {
           break;
       }
     },
-    [ensureProfiles, ensureUsers, refreshIfStranger, resync, me.id],
+    [ensureProfiles, ensureUsers, refreshIfStranger, resync, loadRooms, me.id],
   );
 
   // The socket, for the life of the signed-in view.
