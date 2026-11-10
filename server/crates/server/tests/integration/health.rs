@@ -94,6 +94,9 @@ pub async fn metrics_report_activity(infra: Arc<Infra>) {
     let room = app.create_room(&ada, "Metrics", "public").await;
     let mut socket = crate::ws::connect(&app, &ada.cookie).await;
     socket.send_message(room.id, "counted").await;
+    // Wait for the fan-out copy, so fanout_latency_seconds has been recorded by
+    // the time we scrape.
+    socket.expect_message("counted").await;
 
     let body = app
         .get("/metrics")
@@ -114,6 +117,16 @@ pub async fn metrics_report_activity(infra: Arc<Infra>) {
     assert!(
         metric_value(&body, "messages_sent_total") >= 1.0,
         "this test's message is counted sent"
+    );
+    // The per-call histograms are registered once their paths run: the Scylla
+    // write and the fan-out to this socket.
+    assert!(
+        body.contains("scylla_query_seconds"),
+        "scylla timing present"
+    );
+    assert!(
+        body.contains("fanout_latency_seconds"),
+        "fanout timing present"
     );
 
     app.stop().await;

@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 protocol.workspace = true
+metrics.workspace = true
 redis.workspace = true
 scylla.workspace = true
 sqlx.workspace = true

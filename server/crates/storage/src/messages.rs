@@ -395,6 +395,21 @@ impl MessageStore {
         &self.session
     }
 
+    /// Runs a prepared statement, timing it for `scylla_query_seconds{query}`
+    /// (docs/design.md 13).
+    async fn timed(
+        &self,
+        query: &'static str,
+        statement: &PreparedStatement,
+        values: impl scylla::serialize::row::SerializeRow,
+    ) -> Result<scylla::response::query_result::QueryResult, StoreError> {
+        let start = std::time::Instant::now();
+        let result = self.session.execute_unpaged(statement, values).await;
+        metrics::histogram!("scylla_query_seconds", "query" => query)
+            .record(start.elapsed().as_secs_f64());
+        result.map_err(StoreError::new)
+    }
+
     /// Stores a message. Safe to repeat with the same arguments: the same
     /// cells are written with the same write timestamp (the one inside the
     /// ID), so a repeat changes nothing, and it can never overwrite a later
@@ -411,10 +426,8 @@ impl MessageStore {
             // The index entry goes first. If the message write below then
             // fails, the bucket is merely empty, which pagination handles.
             // The other order could hide a stored message from pagination.
-            self.session
-                .execute_unpaged(&self.insert_bucket, (new.room_id, bucket))
-                .await
-                .map_err(StoreError::new)?;
+            self.timed("insert_bucket", &self.insert_bucket, (new.room_id, bucket))
+                .await?;
             let mut cache = self
                 .recorded_buckets
                 .lock()
@@ -429,22 +442,21 @@ impl MessageStore {
             i32::try_from(ttl.as_secs().max(1)).unwrap_or(i32::MAX)
         });
         let write_ts = new.id.write_timestamp_us();
-        self.session
-            .execute_unpaged(
-                &self.insert_message,
-                (
-                    new.room_id,
-                    bucket,
-                    new.id.as_i64(),
-                    new.author_id,
-                    new.content,
-                    write_ts,
-                    write_ts,
-                    ttl,
-                ),
-            )
-            .await
-            .map_err(StoreError::new)?;
+        self.timed(
+            "insert_message",
+            &self.insert_message,
+            (
+                new.room_id,
+                bucket,
+                new.id.as_i64(),
+                new.author_id,
+                new.content,
+                write_ts,
+                write_ts,
+                ttl,
+            ),
+        )
+        .await?;
         Ok(())
     }
 
@@ -454,10 +466,12 @@ impl MessageStore {
         id: MessageId,
     ) -> Result<Option<StoredMessage>, StoreError> {
         let result = self
-            .session
-            .execute_unpaged(&self.get_message, (room_id, id.bucket(), id.as_i64()))
-            .await
-            .map_err(StoreError::new)?;
+            .timed(
+                "get_message",
+                &self.get_message,
+                (room_id, id.bucket(), id.as_i64()),
+            )
+            .await?;
         let rows = result.into_rows_result().map_err(StoreError::new)?;
         let row = rows
             .maybe_first_row::<MessageRow>()
@@ -483,10 +497,12 @@ impl MessageStore {
             Option<i32>,
         );
         let result = self
-            .session
-            .execute_unpaged(&self.get_with_ttl, (room_id, id.bucket(), id.as_i64()))
-            .await
-            .map_err(StoreError::new)?;
+            .timed(
+                "get_with_ttl",
+                &self.get_with_ttl,
+                (room_id, id.bucket(), id.as_i64()),
+            )
+            .await?;
         let rows = result.into_rows_result().map_err(StoreError::new)?;
         let Some((id, author, content, edited_at, deleted, version, ttl)) =
             rows.maybe_first_row::<Row>().map_err(StoreError::new)?
@@ -499,14 +515,11 @@ impl MessageStore {
 
     async fn messages(
         &self,
+        query: &'static str,
         statement: &PreparedStatement,
         values: impl scylla::serialize::row::SerializeRow,
     ) -> Result<Vec<StoredMessage>, StoreError> {
-        let result = self
-            .session
-            .execute_unpaged(statement, values)
-            .await
-            .map_err(StoreError::new)?;
+        let result = self.timed(query, statement, values).await?;
         let rows = result.into_rows_result().map_err(StoreError::new)?;
         let mut out = Vec::new();
         for row in rows.rows::<MessageRow>().map_err(StoreError::new)? {
@@ -517,14 +530,11 @@ impl MessageStore {
 
     async fn buckets(
         &self,
+        query: &'static str,
         statement: &PreparedStatement,
         values: impl scylla::serialize::row::SerializeRow,
     ) -> Result<Vec<i32>, StoreError> {
-        let result = self
-            .session
-            .execute_unpaged(statement, values)
-            .await
-            .map_err(StoreError::new)?;
+        let result = self.timed(query, statement, values).await?;
         let rows = result.into_rows_result().map_err(StoreError::new)?;
         rows.rows::<(i32,)>()
             .map_err(StoreError::new)?
@@ -582,23 +592,22 @@ impl MessageStore {
         write_ts: i64,
         ttl: Option<Duration>,
     ) -> Result<(), StoreError> {
-        self.session
-            .execute_unpaged(
-                &self.edit_message,
-                (
-                    write_ts,
-                    ttl_secs(ttl),
-                    content,
-                    edited_at,
-                    write_ts,
-                    room_id,
-                    id.bucket(),
-                    id.as_i64(),
-                ),
-            )
-            .await
-            .map(|_| ())
-            .map_err(StoreError::new)
+        self.timed(
+            "edit_message",
+            &self.edit_message,
+            (
+                write_ts,
+                ttl_secs(ttl),
+                content,
+                edited_at,
+                write_ts,
+                room_id,
+                id.bucket(),
+                id.as_i64(),
+            ),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Soft-deletes a message: a flag and cleared content, not a row delete
@@ -610,21 +619,20 @@ impl MessageStore {
         write_ts: i64,
         ttl: Option<Duration>,
     ) -> Result<(), StoreError> {
-        self.session
-            .execute_unpaged(
-                &self.delete_message,
-                (
-                    write_ts,
-                    ttl_secs(ttl),
-                    write_ts,
-                    room_id,
-                    id.bucket(),
-                    id.as_i64(),
-                ),
-            )
-            .await
-            .map(|_| ())
-            .map_err(StoreError::new)
+        self.timed(
+            "delete_message",
+            &self.delete_message,
+            (
+                write_ts,
+                ttl_secs(ttl),
+                write_ts,
+                room_id,
+                id.bucket(),
+                id.as_i64(),
+            ),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Current state of several messages, one query per bucket.
@@ -641,7 +649,7 @@ impl MessageStore {
         let mut out = Vec::with_capacity(ids.len());
         for (bucket, ids) in by_bucket {
             out.extend(
-                self.messages(&self.get_many, (room_id, bucket, ids))
+                self.messages("get_many", &self.get_many, (room_id, bucket, ids))
                     .await?,
             );
         }
@@ -662,21 +670,20 @@ impl MessageStore {
         ttl: Option<Duration>,
     ) -> Result<(), StoreError> {
         let ttl = ttl.map_or(CHANGE_RETENTION, |t| t.min(CHANGE_RETENTION));
-        self.session
-            .execute_unpaged(
-                &self.insert_change,
-                (
-                    room_id,
-                    change_id.day(),
-                    change_id.as_i64(),
-                    message_id.as_i64(),
-                    kind as i8,
-                    ttl_secs(Some(ttl)),
-                ),
-            )
-            .await
-            .map(|_| ())
-            .map_err(StoreError::new)
+        self.timed(
+            "insert_change",
+            &self.insert_change,
+            (
+                room_id,
+                change_id.day(),
+                change_id.as_i64(),
+                message_id.as_i64(),
+                kind as i8,
+                ttl_secs(Some(ttl)),
+            ),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Messages changed after `after` (exclusive), up to `now`: their IDs
@@ -696,13 +703,12 @@ impl MessageStore {
         let mut ids = Vec::new();
         for day in after.day()..=now.day() {
             let result = self
-                .session
-                .execute_unpaged(
+                .timed(
+                    "changes_in_day",
                     &self.changes_in_day,
                     (room_id, day, after.as_i64(), cql_limit(MAX_CHANGES + 1)),
                 )
-                .await
-                .map_err(StoreError::new)?;
+                .await?;
             let rows = result.into_rows_result().map_err(StoreError::new)?;
             for row in rows.rows::<(i64, i64)>().map_err(StoreError::new)? {
                 let (_, message_id) = row.map_err(StoreError::new)?;
@@ -734,23 +740,22 @@ impl MessageStore {
         write_ts: i64,
         ttl: Option<Duration>,
     ) -> Result<(), StoreError> {
-        self.session
-            .execute_unpaged(
-                &self.set_reaction,
-                (
-                    write_ts,
-                    ttl_secs(ttl),
-                    active,
-                    room_id,
-                    id.bucket(),
-                    id.as_i64(),
-                    emoji,
-                    user_id,
-                ),
-            )
-            .await
-            .map(|_| ())
-            .map_err(StoreError::new)
+        self.timed(
+            "set_reaction",
+            &self.set_reaction,
+            (
+                write_ts,
+                ttl_secs(ttl),
+                active,
+                room_id,
+                id.bucket(),
+                id.as_i64(),
+                emoji,
+                user_id,
+            ),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// How many users currently have this reaction on this message.
@@ -761,13 +766,12 @@ impl MessageStore {
         emoji: &str,
     ) -> Result<u32, StoreError> {
         let result = self
-            .session
-            .execute_unpaged(
+            .timed(
+                "reactions_for_emoji",
                 &self.reactions_for_emoji,
                 (room_id, id.bucket(), id.as_i64(), emoji),
             )
-            .await
-            .map_err(StoreError::new)?;
+            .await?;
         let rows = result.into_rows_result().map_err(StoreError::new)?;
         let mut count = 0;
         for row in rows.rows::<(Option<bool>,)>().map_err(StoreError::new)? {
@@ -799,10 +803,12 @@ impl MessageStore {
             std::collections::HashMap::new();
         for (bucket, (low, high)) in ranges {
             let result = self
-                .session
-                .execute_unpaged(&self.reactions_in_range, (room_id, bucket, low, high))
-                .await
-                .map_err(StoreError::new)?;
+                .timed(
+                    "reactions_in_range",
+                    &self.reactions_in_range,
+                    (room_id, bucket, low, high),
+                )
+                .await?;
             let rows = result.into_rows_result().map_err(StoreError::new)?;
             for row in rows
                 .rows::<(i64, String, Uuid, Option<bool>)>()
@@ -882,6 +888,7 @@ impl HistorySource for MessageStore {
         limit: usize,
     ) -> Result<Vec<StoredMessage>, StoreError> {
         self.messages(
+            "newest_in_bucket",
             &self.newest_in_bucket,
             (room_id, bucket, before, after, cql_limit(limit)),
         )
@@ -898,14 +905,19 @@ impl HistorySource for MessageStore {
         match below {
             Some(below) => {
                 self.buckets(
+                    "buckets_below",
                     &self.buckets_below,
                     (room_id, below, floor, cql_limit(limit)),
                 )
                 .await
             }
             None => {
-                self.buckets(&self.buckets_below_all, (room_id, floor, cql_limit(limit)))
-                    .await
+                self.buckets(
+                    "buckets_below_all",
+                    &self.buckets_below_all,
+                    (room_id, floor, cql_limit(limit)),
+                )
+                .await
             }
         }
     }
@@ -918,6 +930,7 @@ impl HistorySource for MessageStore {
         limit: usize,
     ) -> Result<Vec<StoredMessage>, StoreError> {
         self.messages(
+            "oldest_in_bucket",
             &self.oldest_in_bucket,
             (room_id, bucket, after, cql_limit(limit)),
         )
@@ -930,8 +943,12 @@ impl HistorySource for MessageStore {
         from: i32,
         limit: usize,
     ) -> Result<Vec<i32>, StoreError> {
-        self.buckets(&self.buckets_from, (room_id, from, cql_limit(limit)))
-            .await
+        self.buckets(
+            "buckets_from",
+            &self.buckets_from,
+            (room_id, from, cql_limit(limit)),
+        )
+        .await
     }
 }
 

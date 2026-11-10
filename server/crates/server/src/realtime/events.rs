@@ -61,6 +61,27 @@ impl Event {
     }
 }
 
+/// What actually travels on the wire: the event plus the unix time (seconds)
+/// it was published, so the receiver can measure fan-out latency
+/// (docs/design.md 13).
+#[derive(Serialize, Deserialize)]
+struct Envelope {
+    ts: f64,
+    event: Event,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// Parses a published payload into its publish time (unix seconds) and event.
+pub fn decode(payload: &str) -> Result<(f64, Event), serde_json::Error> {
+    let envelope: Envelope = serde_json::from_str(payload)?;
+    Ok((envelope.ts, envelope.event))
+}
+
 /// Publishes an event. Failures are the caller's to handle: for most events
 /// the stored state is already committed and clients recover from it.
 pub async fn publish(
@@ -68,7 +89,11 @@ pub async fn publish(
     channel: &str,
     event: &Event,
 ) -> redis::RedisResult<()> {
-    let payload = serde_json::to_string(event).expect("events always serialize");
+    let envelope = Envelope {
+        ts: now_secs(),
+        event: event.clone(),
+    };
+    let payload = serde_json::to_string(&envelope).expect("events always serialize");
     redis::cmd("PUBLISH")
         .arg(channel)
         .arg(payload)

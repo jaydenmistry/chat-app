@@ -63,6 +63,13 @@ pub fn index_lag(seconds: f64) {
     metrics::gauge!("index_lag_seconds").set(seconds);
 }
 
+/// Time from publishing a message to delivering it on this instance
+/// (`fanout_latency_seconds`): the publish time travels in the Redis payload,
+/// so this spans instances and carries their (bounded) clock skew.
+pub fn fanout_latency(seconds: f64) {
+    metrics::histogram!("fanout_latency_seconds").record(seconds.max(0.0));
+}
+
 /// Whether this instance currently has no usable worker-ID lease
 /// (`worker_id_fenced`): 1 while fenced (lease lost or clock-skewed), 0 when
 /// issuing IDs.

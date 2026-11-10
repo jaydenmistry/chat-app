@@ -267,8 +267,8 @@ async fn dispatch(deps: &Deps, sink: &mut PubSubSink, message: &redis::Msg) -> b
     let Ok(payload) = message.get_payload::<String>() else {
         return true;
     };
-    let event: Event = match serde_json::from_str(&payload) {
-        Ok(event) => event,
+    let (published_at, event) = match events::decode(&payload) {
+        Ok(decoded) => decoded,
         Err(err) => {
             tracing::warn!(error = %err, channel, "ignoring malformed event");
             return true;
@@ -288,6 +288,10 @@ async fn dispatch(deps: &Deps, sink: &mut PubSubSink, message: &redis::Msg) -> b
             } else if let Some(user) = id_after("user:") {
                 hub.deliver_to_user(user, &frame);
             }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |d| d.as_secs_f64());
+            crate::observe::fanout_latency(now - published_at);
         }
         Event::Presence { user_id, frame } => {
             hub.deliver_to_watchers(user_id, &Utf8Bytes::from(frame));
