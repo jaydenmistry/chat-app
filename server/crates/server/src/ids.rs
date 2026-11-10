@@ -259,11 +259,14 @@ pub async fn run_lease(
                 return;
             }
         };
-        let hwm: Option<u64> = redis::cmd("GET")
-            .arg(hwm_key(worker))
-            .query_async(&mut redis.clone())
-            .await
-            .unwrap_or(None);
+        let hwm: Option<u64> = storage::metered::redis(
+            "lease.hwm",
+            redis::cmd("GET")
+                .arg(hwm_key(worker))
+                .query_async(&mut redis.clone()),
+        )
+        .await
+        .unwrap_or(None);
         tracing::info!(worker, "acquired worker ID; in quarantine");
         // Not issuing IDs until quarantine clears.
         crate::observe::worker_id_fenced(true);
@@ -276,14 +279,17 @@ pub async fn run_lease(
         loop {
             let sent = Instant::now();
             let sent_unix_ms = generator.unix_ms();
-            let result: redis::RedisResult<(i64, i64, i64)> = RENEW
-                .key(lease_key(worker))
-                .key(hwm_key(worker))
-                .arg(&instance)
-                .arg(timings.ttl.as_millis() as u64)
-                .arg(generator.last_ms())
-                .invoke_async(&mut redis.clone())
-                .await;
+            let result: redis::RedisResult<(i64, i64, i64)> = storage::metered::redis(
+                "lease.renew",
+                RENEW
+                    .key(lease_key(worker))
+                    .key(hwm_key(worker))
+                    .arg(&instance)
+                    .arg(timings.ttl.as_millis() as u64)
+                    .arg(generator.last_ms())
+                    .invoke_async(&mut redis.clone()),
+            )
+            .await;
             match result {
                 Ok((0, _, _)) => {
                     tracing::warn!(worker, "worker ID lease lost; stopped issuing IDs");
@@ -335,14 +341,17 @@ async fn acquire(
     let start: u16 = rand::rng().random_range(0..=MAX_WORKER);
     for offset in 0..=MAX_WORKER {
         let worker = (start + offset) % (MAX_WORKER + 1);
-        let acquired: Option<String> = redis::cmd("SET")
-            .arg(lease_key(worker))
-            .arg(instance)
-            .arg("NX")
-            .arg("PX")
-            .arg(ttl.as_millis() as u64)
-            .query_async(redis)
-            .await?;
+        let acquired: Option<String> = storage::metered::redis(
+            "lease.acquire",
+            redis::cmd("SET")
+                .arg(lease_key(worker))
+                .arg(instance)
+                .arg("NX")
+                .arg("PX")
+                .arg(ttl.as_millis() as u64)
+                .query_async(redis),
+        )
+        .await?;
         if acquired.is_some() {
             return Ok(Some(worker));
         }
@@ -358,13 +367,16 @@ async fn release(
 ) {
     let last_ms = generator.last_ms();
     generator.drop_lease();
-    let released: redis::RedisResult<i64> = RELEASE
-        .key(lease_key(worker))
-        .key(hwm_key(worker))
-        .arg(instance)
-        .arg(last_ms)
-        .invoke_async(redis)
-        .await;
+    let released: redis::RedisResult<i64> = storage::metered::redis(
+        "lease.release",
+        RELEASE
+            .key(lease_key(worker))
+            .key(hwm_key(worker))
+            .arg(instance)
+            .arg(last_ms)
+            .invoke_async(redis),
+    )
+    .await;
     match released {
         Ok(1) => tracing::info!(worker, "released worker ID"),
         Ok(_) => tracing::warn!(worker, "worker ID was no longer ours at release"),

@@ -55,14 +55,17 @@ pub async fn run_background(
 /// expires before the next tick (like the guest-cleanup lock).
 async fn holds_lock(state: &AppState, interval: Duration) -> bool {
     let ttl_ms = (interval.as_millis() as u64).saturating_sub(500).max(1);
-    let lock: redis::RedisResult<Option<String>> = redis::cmd("SET")
-        .arg("lock:job:demo-reset")
-        .arg(state.instance_id.to_string())
-        .arg("NX")
-        .arg("PX")
-        .arg(ttl_ms)
-        .query_async(&mut state.redis.clone())
-        .await;
+    let lock: redis::RedisResult<Option<String>> = storage::metered::redis(
+        "job.lock",
+        redis::cmd("SET")
+            .arg("lock:job:demo-reset")
+            .arg(state.instance_id.to_string())
+            .arg("NX")
+            .arg("PX")
+            .arg(ttl_ms)
+            .query_async(&mut state.redis.clone()),
+    )
+    .await;
     matches!(lock, Ok(Some(_)))
 }
 

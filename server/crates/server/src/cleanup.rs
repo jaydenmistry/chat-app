@@ -52,14 +52,17 @@ async fn holds_lock(state: &AppState, interval: Duration) -> bool {
     // Release a touch before the next tick; never below 1 ms (short test
     // intervals).
     let ttl_ms = (interval.as_millis() as u64).saturating_sub(500).max(1);
-    let lock: redis::RedisResult<Option<String>> = redis::cmd("SET")
-        .arg("lock:job:guest-cleanup")
-        .arg(state.instance_id.to_string())
-        .arg("NX")
-        .arg("PX")
-        .arg(ttl_ms)
-        .query_async(&mut state.redis.clone())
-        .await;
+    let lock: redis::RedisResult<Option<String>> = storage::metered::redis(
+        "job.lock",
+        redis::cmd("SET")
+            .arg("lock:job:guest-cleanup")
+            .arg(state.instance_id.to_string())
+            .arg("NX")
+            .arg("PX")
+            .arg(ttl_ms)
+            .query_async(&mut state.redis.clone()),
+    )
+    .await;
     matches!(lock, Ok(Some(_)))
 }
 

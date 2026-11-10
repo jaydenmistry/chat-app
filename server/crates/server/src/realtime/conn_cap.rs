@@ -60,15 +60,18 @@ pub async fn admit(
     user_id: Uuid,
     ip: IpAddr,
 ) -> Option<&'static str> {
-    let result: redis::RedisResult<String> = ADMIT
-        .key(user_key(user_id))
-        .key(ip_key(ip))
-        .arg(conn_id.to_string())
-        .arg(state.config.max_sockets_per_user)
-        .arg(state.config.max_sockets_per_ip)
-        .arg(FIELD_TTL_SECS)
-        .invoke_async(&mut state.redis.clone())
-        .await;
+    let result: redis::RedisResult<String> = storage::metered::redis(
+        "conn_cap.admit",
+        ADMIT
+            .key(user_key(user_id))
+            .key(ip_key(ip))
+            .arg(conn_id.to_string())
+            .arg(state.config.max_sockets_per_user)
+            .arg(state.config.max_sockets_per_ip)
+            .arg(FIELD_TTL_SECS)
+            .invoke_async(&mut state.redis.clone()),
+    )
+    .await;
     match result.as_deref() {
         Ok("user") => Some("user"),
         Ok("ip") => Some("ip"),
@@ -91,7 +94,12 @@ pub async fn release(state: &AppState, conn_id: Uuid, user_id: Uuid, ip: IpAddr)
         .arg(ip_key(ip))
         .arg(conn_id.to_string())
         .ignore();
-    if let Err(err) = pipe.query_async::<()>(&mut state.redis.clone()).await {
+    if let Err(err) = storage::metered::redis(
+        "conn_cap.release",
+        pipe.query_async::<()>(&mut state.redis.clone()),
+    )
+    .await
+    {
         // The fields expire on their own if this fails.
         tracing::debug!(error = %err, "releasing connection slot failed");
     }
@@ -123,7 +131,12 @@ pub async fn refresh(state: &AppState) {
             .arg(&conn)
             .ignore();
     }
-    if let Err(err) = pipe.query_async::<()>(&mut state.redis.clone()).await {
+    if let Err(err) = storage::metered::redis(
+        "conn_cap.refresh",
+        pipe.query_async::<()>(&mut state.redis.clone()),
+    )
+    .await
+    {
         tracing::debug!(error = %err, "refreshing connection slots failed");
     }
 }

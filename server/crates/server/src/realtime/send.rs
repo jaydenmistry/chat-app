@@ -248,25 +248,28 @@ pub async fn send(
     };
     let fingerprint = fingerprint(room_id, content);
     let limits = &state.config.rate_limits;
-    let claimed: Option<String> = match CLAIM_KEY
-        .key(format!("idem:{}:{idempotency_key}", sender.user_id))
-        .key(search::STREAM)
-        .key(format!("rl:s:u:{}", sender.user_id))
-        .key(format!("rl:s:ip:{}", sender.ip))
-        .key(format!("rl:s:r:{room_id}"))
-        .arg(claim_value(candidate, room_id, &fingerprint))
-        .arg(IDEMPOTENCY_TTL_SECS)
-        .arg(room_id.to_string())
-        .arg(format!("{room_id}:{fingerprint}"))
-        .arg(search::MAX_STREAM_LEN)
-        .arg(limits.send_user.capacity)
-        .arg(limits.send_user.refill_per_sec)
-        .arg(limits.send_ip.capacity)
-        .arg(limits.send_ip.refill_per_sec)
-        .arg(limits.send_room.capacity)
-        .arg(limits.send_room.refill_per_sec)
-        .invoke_async(&mut state.redis.clone())
-        .await
+    let claimed: Option<String> = match storage::metered::redis(
+        "send.claim",
+        CLAIM_KEY
+            .key(format!("idem:{}:{idempotency_key}", sender.user_id))
+            .key(search::STREAM)
+            .key(format!("rl:s:u:{}", sender.user_id))
+            .key(format!("rl:s:ip:{}", sender.ip))
+            .key(format!("rl:s:r:{room_id}"))
+            .arg(claim_value(candidate, room_id, &fingerprint))
+            .arg(IDEMPOTENCY_TTL_SECS)
+            .arg(room_id.to_string())
+            .arg(format!("{room_id}:{fingerprint}"))
+            .arg(search::MAX_STREAM_LEN)
+            .arg(limits.send_user.capacity)
+            .arg(limits.send_user.refill_per_sec)
+            .arg(limits.send_ip.capacity)
+            .arg(limits.send_ip.refill_per_sec)
+            .arg(limits.send_room.capacity)
+            .arg(limits.send_room.refill_per_sec)
+            .invoke_async(&mut state.redis.clone()),
+    )
+    .await
     {
         Ok(claimed) => claimed,
         // No dedupe without Redis, so no send: duplicates are never possible.

@@ -102,17 +102,20 @@ async fn update(
         Op::Delete => ("del", ""),
         Op::Check => ("check", ""),
     };
-    let changed: redis::RedisResult<Option<String>> = UPDATE
-        .key(format!("presence:{user_id}"))
-        .key(format!("presence_status:{user_id}"))
-        .key(ONLINE_SET)
-        .arg(name)
-        .arg(conn_id.map(|c| c.to_string()).unwrap_or_default())
-        .arg(tab_state)
-        .arg(FIELD_TTL_SECS)
-        .arg(user_id.to_string())
-        .invoke_async(redis)
-        .await;
+    let changed: redis::RedisResult<Option<String>> = storage::metered::redis(
+        "presence.update",
+        UPDATE
+            .key(format!("presence:{user_id}"))
+            .key(format!("presence_status:{user_id}"))
+            .key(ONLINE_SET)
+            .arg(name)
+            .arg(conn_id.map(|c| c.to_string()).unwrap_or_default())
+            .arg(tab_state)
+            .arg(FIELD_TTL_SECS)
+            .arg(user_id.to_string())
+            .invoke_async(redis),
+    )
+    .await;
     match changed {
         Ok(changed) => changed.as_deref().map(status_from_str),
         // Presence is best effort: a failure here only delays a status.
@@ -172,7 +175,12 @@ pub async fn send_current(
     for user in &users {
         pipe.cmd("GET").arg(format!("presence_status:{user}"));
     }
-    let statuses: Vec<Option<String>> = match pipe.query_async(&mut state.redis.clone()).await {
+    let statuses: Vec<Option<String>> = match storage::metered::redis(
+        "presence.statuses",
+        pipe.query_async(&mut state.redis.clone()),
+    )
+    .await
+    {
         Ok(statuses) => statuses,
         Err(err) => {
             tracing::debug!(error = %err, "reading presence failed");
@@ -221,7 +229,12 @@ async fn refresh_fields(state: &AppState) {
             .arg(conn_id.to_string())
             .ignore();
     }
-    if let Err(err) = pipe.query_async::<()>(&mut state.redis.clone()).await {
+    if let Err(err) = storage::metered::redis(
+        "presence.refresh",
+        pipe.query_async::<()>(&mut state.redis.clone()),
+    )
+    .await
+    {
         tracing::debug!(error = %err, "refreshing presence failed");
     }
 }
@@ -229,21 +242,27 @@ async fn refresh_fields(state: &AppState) {
 async fn sweep_expired(state: &AppState) {
     let mut redis = state.redis.clone();
     // One sweeper at a time; the lock expires before the next tick.
-    let lock: redis::RedisResult<Option<String>> = redis::cmd("SET")
-        .arg("lock:job:presence-sweep")
-        .arg(state.instance_id.to_string())
-        .arg("NX")
-        .arg("PX")
-        .arg(SWEEP_EVERY.as_millis() as u64 - 1_000)
-        .query_async(&mut redis)
-        .await;
+    let lock: redis::RedisResult<Option<String>> = storage::metered::redis(
+        "job.lock",
+        redis::cmd("SET")
+            .arg("lock:job:presence-sweep")
+            .arg(state.instance_id.to_string())
+            .arg("NX")
+            .arg("PX")
+            .arg(SWEEP_EVERY.as_millis() as u64 - 1_000)
+            .query_async(&mut redis),
+    )
+    .await;
     if !matches!(lock, Ok(Some(_))) {
         return;
     }
-    let users: Vec<String> = match redis::cmd("SMEMBERS")
-        .arg(ONLINE_SET)
-        .query_async(&mut redis)
-        .await
+    let users: Vec<String> = match storage::metered::redis(
+        "presence.online_members",
+        redis::cmd("SMEMBERS")
+            .arg(ONLINE_SET)
+            .query_async(&mut redis),
+    )
+    .await
     {
         Ok(users) => users,
         Err(_) => return,

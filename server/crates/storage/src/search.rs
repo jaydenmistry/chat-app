@@ -29,7 +29,7 @@ pub struct IndexEntry<'a> {
 /// A delete is kept as a row with `deleted = true`, so a late, older event
 /// can't bring the message back into results.
 pub async fn upsert(pool: &PgPool, entry: &IndexEntry<'_>) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+    crate::metered::pg("search.upsert", sqlx::query!(
         r#"
         INSERT INTO message_search (message_id, room_id, author_id, tsv, deleted, version, expires_at)
         VALUES ($1, $2, $3, to_tsvector($4::regconfig, $5), $6, $7, $8)
@@ -47,7 +47,7 @@ pub async fn upsert(pool: &PgPool, entry: &IndexEntry<'_>) -> Result<(), sqlx::E
         entry.version,
         entry.expires_at,
     )
-    .execute(pool)
+    .execute(pool))
     .await
     .map(|_| ())
 }
@@ -64,8 +64,10 @@ pub async fn search(
     before: Option<MessageId>,
     limit: i64,
 ) -> Result<Vec<(MessageId, Uuid)>, sqlx::Error> {
-    let rows = sqlx::query!(
-        r#"
+    let rows = crate::metered::pg(
+        "search.search",
+        sqlx::query!(
+            r#"
         SELECT s.message_id, s.room_id
         FROM message_search s
         JOIN memberships m ON m.room_id = s.room_id AND m.user_id = $1
@@ -79,14 +81,15 @@ pub async fn search(
         ORDER BY s.message_id DESC
         LIMIT $6
         "#,
-        user_id,
-        CONFIG as &str,
-        query,
-        room_id,
-        before.map(MessageId::as_i64),
-        limit,
+            user_id,
+            CONFIG as &str,
+            query,
+            room_id,
+            before.map(MessageId::as_i64),
+            limit,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()

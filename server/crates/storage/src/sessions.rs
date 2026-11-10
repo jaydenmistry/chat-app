@@ -25,19 +25,22 @@ pub struct NewSession<'a> {
 /// Records a new session and returns its ID.
 pub async fn insert(pool: &PgPool, new: &NewSession<'_>) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::now_v7();
-    sqlx::query!(
-        r#"
+    crate::metered::pg(
+        "sessions.insert",
+        sqlx::query!(
+            r#"
         INSERT INTO sessions (id, user_id, token_hash, expires_at, user_agent, ip)
         VALUES ($1, $2, $3, $4, $5, $6)
         "#,
-        id,
-        new.user_id,
-        &new.token_hash[..],
-        new.expires_at,
-        new.user_agent,
-        new.ip as Option<IpAddr>,
+            id,
+            new.user_id,
+            &new.token_hash[..],
+            new.expires_at,
+            new.user_agent,
+            new.ip as Option<IpAddr>,
+        )
+        .execute(pool),
     )
-    .execute(pool)
     .await?;
     Ok(id)
 }
@@ -53,17 +56,20 @@ pub struct SessionRow {
 /// The user's sessions that are neither revoked nor expired, most recently
 /// used first.
 pub async fn list_active(pool: &PgPool, user_id: Uuid) -> Result<Vec<SessionRow>, sqlx::Error> {
-    sqlx::query_as!(
-        SessionRow,
-        r#"
+    crate::metered::pg(
+        "sessions.list_active",
+        sqlx::query_as!(
+            SessionRow,
+            r#"
         SELECT id, created_at, last_seen_at, user_agent, ip AS "ip: IpAddr"
         FROM sessions
         WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
         ORDER BY last_seen_at DESC
         "#,
-        user_id,
+            user_id,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }
 
@@ -75,16 +81,19 @@ pub async fn revoke(
     user_id: Uuid,
     session_id: Uuid,
 ) -> Result<Option<TokenHash>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
+    let row = crate::metered::pg(
+        "sessions.revoke",
+        sqlx::query!(
+            r#"
         UPDATE sessions SET revoked_at = now()
         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
         RETURNING token_hash
         "#,
-        session_id,
-        user_id,
+            session_id,
+            user_id,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await?;
     // The CHECK constraint guarantees 32 bytes.
     Ok(row.and_then(|r| r.token_hash.try_into().ok()))
@@ -100,15 +109,18 @@ pub struct RevokedSession {
 /// Revokes every active session of a user and returns them, so the caller can
 /// delete the live copies and close the sockets. Used when banning an account.
 pub async fn revoke_all(pool: &PgPool, user_id: Uuid) -> Result<Vec<RevokedSession>, sqlx::Error> {
-    let rows = sqlx::query!(
-        r#"
+    let rows = crate::metered::pg(
+        "sessions.revoke_all",
+        sqlx::query!(
+            r#"
         UPDATE sessions SET revoked_at = now()
         WHERE user_id = $1 AND revoked_at IS NULL
         RETURNING id, token_hash
         "#,
-        user_id,
+            user_id,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
@@ -131,12 +143,15 @@ pub async fn touch(
     session_id: Uuid,
     expires_at: OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE sessions SET last_seen_at = now(), expires_at = $2 WHERE id = $1",
-        session_id,
-        expires_at,
+    crate::metered::pg(
+        "sessions.touch",
+        sqlx::query!(
+            "UPDATE sessions SET last_seen_at = now(), expires_at = $2 WHERE id = $1",
+            session_id,
+            expires_at,
+        )
+        .execute(pool),
     )
-    .execute(pool)
     .await
     .map(|_| ())
 }
@@ -174,37 +189,41 @@ pub async fn store_live(
 ) -> RedisResult<()> {
     let key = live_key(hash);
     // MULTI/EXEC, so the hash never exists without its TTL.
-    redis::pipe()
-        .atomic()
-        .cmd("HSET")
-        .arg(&key)
-        .arg("session_id")
-        .arg(live.session_id.to_string())
-        .arg("user_id")
-        .arg(live.user_id.to_string())
-        .arg("expires_at")
-        .arg(live.expires_at)
-        .arg("sliding")
-        .arg(u8::from(live.sliding))
-        .arg("refreshed_at")
-        .arg(live.refreshed_at)
-        .ignore()
-        .cmd("EXPIRE")
-        .arg(&key)
-        .arg(ttl_until(live.expires_at))
-        .ignore()
-        .query_async(conn)
-        .await
+    crate::metered::redis(
+        "session.store",
+        redis::pipe()
+            .atomic()
+            .cmd("HSET")
+            .arg(&key)
+            .arg("session_id")
+            .arg(live.session_id.to_string())
+            .arg("user_id")
+            .arg(live.user_id.to_string())
+            .arg("expires_at")
+            .arg(live.expires_at)
+            .arg("sliding")
+            .arg(u8::from(live.sliding))
+            .arg("refreshed_at")
+            .arg(live.refreshed_at)
+            .ignore()
+            .cmd("EXPIRE")
+            .arg(&key)
+            .arg(ttl_until(live.expires_at))
+            .ignore()
+            .query_async(conn),
+    )
+    .await
 }
 
 pub async fn load_live(
     conn: &mut ConnectionManager,
     hash: &TokenHash,
 ) -> RedisResult<Option<LiveSession>> {
-    let fields: HashMap<String, String> = redis::cmd("HGETALL")
-        .arg(live_key(hash))
-        .query_async(conn)
-        .await?;
+    let fields: HashMap<String, String> = crate::metered::redis(
+        "session.load",
+        redis::cmd("HGETALL").arg(live_key(hash)).query_async(conn),
+    )
+    .await?;
     if fields.is_empty() {
         return Ok(None);
     }
@@ -248,13 +267,16 @@ pub async fn extend_live(
     expires_at: i64,
     refreshed_at: i64,
 ) -> RedisResult<bool> {
-    let extended: i64 = EXTEND_IF_PRESENT
-        .key(live_key(hash))
-        .arg(expires_at)
-        .arg(refreshed_at)
-        .arg(ttl_until(expires_at))
-        .invoke_async(conn)
-        .await?;
+    let extended: i64 = crate::metered::redis(
+        "session.extend",
+        EXTEND_IF_PRESENT
+            .key(live_key(hash))
+            .arg(expires_at)
+            .arg(refreshed_at)
+            .arg(ttl_until(expires_at))
+            .invoke_async(conn),
+    )
+    .await?;
     Ok(extended == 1)
 }
 
@@ -271,14 +293,15 @@ pub async fn live_exists_many(
     for hash in hashes {
         pipe.cmd("EXISTS").arg(live_key(hash));
     }
-    pipe.query_async(conn).await
+    crate::metered::redis("session.exists_many", pipe.query_async(conn)).await
 }
 
 pub async fn delete_live(conn: &mut ConnectionManager, hash: &TokenHash) -> RedisResult<()> {
-    redis::cmd("DEL")
-        .arg(live_key(hash))
-        .query_async(conn)
-        .await
+    crate::metered::redis(
+        "session.delete",
+        redis::cmd("DEL").arg(live_key(hash)).query_async(conn),
+    )
+    .await
 }
 
 #[cfg(test)]

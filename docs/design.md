@@ -985,7 +985,7 @@ so all log lines for one connection can be filtered together.
 
 **Metrics** are a Prometheus recorder rendered at `GET /metrics`. This is
 served on the app port, not a separate 9090 (one less listener), so the reverse
-proxy must keep `/metrics` internal — the deploy guide says so. Wired:
+proxy must keep `/metrics` internal — the deploy guide says so.
 
 - `ws_connections_open` (gauge)
 - `messages_sent_total`
@@ -993,11 +993,13 @@ proxy must keep `/metrics` internal — the deploy guide says so. Wired:
 - `slow_consumer_disconnects_total`
 - `index_lag_seconds` (gauge: the age of the entry the indexer last handled)
 - `worker_id_fenced` (gauge: 1 while this instance has no usable lease)
-
-Still to wire (per-call timing, more invasive): `fanout_latency_seconds`
-(publish to `try_send`, the publish time carried in the Redis payload),
-`redis_command_seconds{cmd}`, `scylla_query_seconds{query}`,
-`pg_query_seconds{query}`.
+- `fanout_latency_seconds` (histogram: publish to local delivery; the publish
+  time travels in the Redis payload, so it spans instances)
+- `pg_query_seconds{query}`, `scylla_query_seconds{query}`,
+  `redis_command_seconds{cmd}` (histograms, labelled by operation): neither
+  sqlx nor the Redis client has a query hook, so the stores are timed with
+  small wrappers at the call sites (`storage::metered`, and `MessageStore` for
+  Scylla).
 
 **Health.** `/healthz` returns 200 if the process is up. `/readyz` returns
 200 only if Postgres, Redis and Scylla answer within 1 s, a worker ID lease
@@ -1529,8 +1531,9 @@ restart doesn't send them all at the same moment. Metrics (13): a process-wide
 Prometheus recorder rendered at `GET /metrics` on the app port (the proxy keeps
 it internal), with `ws_connections_open`, `messages_sent_total`,
 `rate_limit_rejections_total{action}`, `slow_consumer_disconnects_total`,
-`index_lag_seconds` and `worker_id_fenced` wired; the per-call timing histograms
-are still to come (13). Two maintenance commands (10, 4.2), run with `docker
+`index_lag_seconds`, `worker_id_fenced`, `fanout_latency_seconds` and the
+per-operation `pg`/`scylla`/`redis` timing histograms (13). Two maintenance
+commands (10, 4.2), run with `docker
 exec`: `server reindex --room <id>` re-enqueues every message of a room onto the
 search stream so the indexers rebuild its entries (also recovering entries
 trimmed from the stream while no indexer ran); `server reclaim --room <id>`
@@ -1544,8 +1547,6 @@ Load tests (14, decision 14): a k6 script (`load/chat.js`) drives the realtime
 write path under many virtual users; the numbers are still to be measured in a
 sandbox (only measured numbers go in this doc).
 
-Parts of those sections that are deliberately not built yet:
-
-| Piece | Section | Phase |
-|---|---|---|
-| Per-call timing histograms: `fanout_latency_seconds`, `{redis,scylla,pg}_*_seconds` | 13 | 4 |
+Everything in these sections is now built. The only thing left is measured
+numbers from a load test (decision 14), which wait for a sandbox run of
+`load/chat.js` — this doc records only measured numbers.

@@ -59,20 +59,23 @@ pub async fn create_password_user(
     pool: &PgPool,
     new: &NewPasswordUser<'_>,
 ) -> Result<User, CreateUserError> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.create_password",
+        sqlx::query_as!(
+            User,
+            r#"
         INSERT INTO users (id, handle, display_name, email, password_hash)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         "#,
-        Uuid::now_v7(),
-        new.handle,
-        new.display_name,
-        new.email,
-        new.password_hash,
+            Uuid::now_v7(),
+            new.handle,
+            new.display_name,
+            new.email,
+            new.password_hash,
+        )
+        .fetch_one(pool),
     )
-    .fetch_one(pool)
     .await
     .map_err(classify)
 }
@@ -83,19 +86,22 @@ pub async fn create_guest(
     display_name: &str,
     expires_at: OffsetDateTime,
 ) -> Result<User, CreateUserError> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.create_guest",
+        sqlx::query_as!(
+            User,
+            r#"
         INSERT INTO users (id, handle, display_name, is_guest, expires_at)
         VALUES ($1, $2, $3, true, $4)
         RETURNING id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         "#,
-        Uuid::now_v7(),
-        handle,
-        display_name,
-        expires_at,
+            Uuid::now_v7(),
+            handle,
+            display_name,
+            expires_at,
+        )
+        .fetch_one(pool),
     )
-    .fetch_one(pool)
     .await
     .map_err(classify)
 }
@@ -111,20 +117,23 @@ pub async fn create_github_user(
     pool: &PgPool,
     new: &GithubUser<'_>,
 ) -> Result<User, CreateUserError> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.create_github",
+        sqlx::query_as!(
+            User,
+            r#"
         INSERT INTO users (id, handle, display_name, github_id, avatar_url)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         "#,
-        Uuid::now_v7(),
-        new.handle,
-        new.display_name,
-        new.github_id,
-        new.avatar_url,
+            Uuid::now_v7(),
+            new.handle,
+            new.display_name,
+            new.github_id,
+            new.avatar_url,
+        )
+        .fetch_one(pool),
     )
-    .fetch_one(pool)
     .await
     .map_err(classify)
 }
@@ -136,17 +145,20 @@ pub async fn refresh_github_user(
     github_id: i64,
     avatar_url: Option<&str>,
 ) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.refresh_github",
+        sqlx::query_as!(
+            User,
+            r#"
         UPDATE users SET avatar_url = $2
         WHERE github_id = $1
         RETURNING id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         "#,
-        github_id,
-        avatar_url,
+            github_id,
+            avatar_url,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await
 }
 
@@ -159,14 +171,17 @@ pub async fn find_for_login(
     pool: &PgPool,
     email: &str,
 ) -> Result<Option<LoginRecord>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
+    let row = crate::metered::pg(
+        "users.find_for_login",
+        sqlx::query!(
+            r#"
         SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at, password_hash
         FROM users WHERE email = $1
         "#,
-        email,
+            email,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| LoginRecord {
         user: User {
@@ -183,30 +198,36 @@ pub async fn find_for_login(
 }
 
 pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.find_by_id",
+        sqlx::query_as!(
+            User,
+            r#"
         SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         FROM users WHERE id = $1
         "#,
-        id,
+            id,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await
 }
 
 /// Live users only: an expired guest the cleanup job hasn't deleted yet is
 /// treated as gone.
 pub async fn find_by_handle(pool: &PgPool, handle: &str) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.find_by_handle",
+        sqlx::query_as!(
+            User,
+            r#"
         SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         FROM users WHERE handle = $1 AND (expires_at IS NULL OR expires_at > now())
         "#,
-        handle,
+            handle,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await
 }
 
@@ -214,9 +235,11 @@ pub async fn find_by_handle(pool: &PgPool, handle: &str) -> Result<Option<User>,
 /// sessions are ended separately (docs/design.md 11.4). Idempotent; re-banning
 /// just moves the timestamp. Returns false if there is no such user.
 pub async fn ban(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!("UPDATE users SET banned_at = now() WHERE id = $1", user_id)
-        .execute(pool)
-        .await?;
+    let result = crate::metered::pg(
+        "users.ban",
+        sqlx::query!("UPDATE users SET banned_at = now() WHERE id = $1", user_id).execute(pool),
+    )
+    .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -238,41 +261,52 @@ pub async fn delete_expired_guests(
     limit: i64,
 ) -> Result<Vec<ExpiredGuest>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let ids: Vec<Uuid> = sqlx::query_scalar!(
-        r#"
+    let ids: Vec<Uuid> = crate::metered::pg(
+        "users.expired_guest_ids",
+        sqlx::query_scalar!(
+            r#"
         SELECT id FROM users
         WHERE is_guest AND expires_at <= now()
         ORDER BY expires_at
         LIMIT $1
         "#,
-        limit,
+            limit,
+        )
+        .fetch_all(&mut *tx),
     )
-    .fetch_all(&mut *tx)
     .await?;
 
     let mut expired = Vec::with_capacity(ids.len());
     for user_id in ids {
-        let rooms: Vec<Uuid> = sqlx::query_scalar!(
-            "SELECT room_id FROM memberships WHERE user_id = $1",
-            user_id,
+        let rooms: Vec<Uuid> = crate::metered::pg(
+            "users.guest_rooms",
+            sqlx::query_scalar!(
+                "SELECT room_id FROM memberships WHERE user_id = $1",
+                user_id,
+            )
+            .fetch_all(&mut *tx),
         )
-        .fetch_all(&mut *tx)
         .await?;
         // Drop the DM rooms the guest was in (cascading their memberships);
         // their public and private memberships go when the user is deleted.
-        sqlx::query!(
-            r#"
+        crate::metered::pg(
+            "users.delete_guest_dms",
+            sqlx::query!(
+                r#"
             DELETE FROM rooms
             WHERE kind = 'dm'
               AND id IN (SELECT room_id FROM memberships WHERE user_id = $1)
             "#,
-            user_id,
+                user_id,
+            )
+            .execute(&mut *tx),
         )
-        .execute(&mut *tx)
         .await?;
-        sqlx::query!("DELETE FROM users WHERE id = $1", user_id)
-            .execute(&mut *tx)
-            .await?;
+        crate::metered::pg(
+            "users.delete_guest",
+            sqlx::query!("DELETE FROM users WHERE id = $1", user_id).execute(&mut *tx),
+        )
+        .await?;
         expired.push(ExpiredGuest { user_id, rooms });
     }
 
@@ -282,15 +316,18 @@ pub async fn delete_expired_guests(
 
 /// Profiles for message authors and DM peers, at most 200 per call.
 pub async fn find_many(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<User>, sqlx::Error> {
-    sqlx::query_as!(
-        User,
-        r#"
+    crate::metered::pg(
+        "users.find_many",
+        sqlx::query_as!(
+            User,
+            r#"
         SELECT id, handle, display_name, avatar_url, is_guest, expires_at, banned_at
         FROM users WHERE id = ANY($1)
         LIMIT 200
         "#,
-        ids,
+            ids,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }

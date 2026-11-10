@@ -9,6 +9,7 @@
 //! this crate knows about HTTP.
 
 pub mod messages;
+pub mod metered;
 pub mod postgres;
 pub mod redisdb;
 pub mod rooms;

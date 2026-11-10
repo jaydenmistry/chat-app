@@ -94,12 +94,15 @@ pub async fn publish(
         event: event.clone(),
     };
     let payload = serde_json::to_string(&envelope).expect("events always serialize");
-    redis::cmd("PUBLISH")
-        .arg(channel)
-        .arg(payload)
-        .query_async::<i64>(redis)
-        .await
-        .map(|_| ())
+    storage::metered::redis(
+        "events.publish",
+        redis::cmd("PUBLISH")
+            .arg(channel)
+            .arg(payload)
+            .query_async::<i64>(redis),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Publishes, logging instead of failing: for events whose effect is

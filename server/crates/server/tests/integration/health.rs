@@ -128,6 +128,11 @@ pub async fn metrics_report_activity(infra: Arc<Infra>) {
         body.contains("fanout_latency_seconds"),
         "fanout timing present"
     );
+    assert!(body.contains("pg_query_seconds"), "postgres timing present");
+    assert!(
+        body.contains("redis_command_seconds"),
+        "redis timing present"
+    );
 
     app.stop().await;
 }

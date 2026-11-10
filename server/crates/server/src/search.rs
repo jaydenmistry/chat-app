@@ -80,18 +80,21 @@ pub async fn enqueue(
     room_id: Uuid,
     message_id: MessageId,
 ) -> redis::RedisResult<String> {
-    redis::cmd("XADD")
-        .arg(STREAM)
-        .arg("MAXLEN")
-        .arg("~")
-        .arg(MAX_STREAM_LEN)
-        .arg("*")
-        .arg("room_id")
-        .arg(room_id.to_string())
-        .arg("message_id")
-        .arg(message_id.to_string())
-        .query_async(redis)
-        .await
+    storage::metered::redis(
+        "search.enqueue",
+        redis::cmd("XADD")
+            .arg(STREAM)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(MAX_STREAM_LEN)
+            .arg("*")
+            .arg("room_id")
+            .arg(room_id.to_string())
+            .arg("message_id")
+            .arg(message_id.to_string())
+            .query_async(redis),
+    )
+    .await
 }
 
 pub async fn run_indexer(state: AppState, mut shutdown: watch::Receiver<bool>) {

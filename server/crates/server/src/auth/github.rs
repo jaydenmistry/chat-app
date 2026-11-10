@@ -66,14 +66,17 @@ pub async fn start(state: &AppState, github: &GithubConfig) -> Result<Started, A
     let nonce = token::random_string(32);
     let challenge = pkce_challenge(&verifier);
 
-    redis::cmd("SET")
-        .arg(pending_key(&oauth_state))
-        // base64url never contains '.', so it is a safe separator.
-        .arg(format!("{verifier}.{nonce}"))
-        .arg("EX")
-        .arg(PENDING_TTL_SECS)
-        .query_async::<()>(&mut state.redis.clone())
-        .await?;
+    storage::metered::redis(
+        "github.store_state",
+        redis::cmd("SET")
+            .arg(pending_key(&oauth_state))
+            // base64url never contains '.', so it is a safe separator.
+            .arg(format!("{verifier}.{nonce}"))
+            .arg("EX")
+            .arg(PENDING_TTL_SECS)
+            .query_async::<()>(&mut state.redis.clone()),
+    )
+    .await?;
 
     let authorize_url = reqwest::Url::parse_with_params(
         &format!("{}/login/oauth/authorize", github.oauth_base_url),
@@ -124,10 +127,13 @@ pub async fn finish(
     cookie_nonce: Option<&str>,
 ) -> Result<User, GithubError> {
     // GETDEL makes each state usable exactly once.
-    let pending: Option<String> = redis::cmd("GETDEL")
-        .arg(pending_key(oauth_state))
-        .query_async(&mut state.redis.clone())
-        .await?;
+    let pending: Option<String> = storage::metered::redis(
+        "github.take_state",
+        redis::cmd("GETDEL")
+            .arg(pending_key(oauth_state))
+            .query_async(&mut state.redis.clone()),
+    )
+    .await?;
     let (verifier, nonce) = pending
         .as_deref()
         .and_then(|value| value.split_once('.'))

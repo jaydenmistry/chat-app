@@ -133,7 +133,8 @@ pub async fn check(
     for (_, bucket) in buckets {
         invocation.arg(bucket.capacity).arg(bucket.refill_per_sec);
     }
-    let allowed: i64 = invocation.invoke_async(redis).await?;
+    let allowed: i64 =
+        storage::metered::redis("ratelimit.take", invocation.invoke_async(redis)).await?;
     Ok(allowed == 1)
 }
 

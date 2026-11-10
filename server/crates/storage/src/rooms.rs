@@ -60,16 +60,19 @@ pub async fn membership(
     room_id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<Membership>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
+    let row = crate::metered::pg(
+        "rooms.membership",
+        sqlx::query!(
+            r#"
         SELECT m.role, r.kind, r.message_expiry_at, r.history_floor
         FROM memberships m JOIN rooms r ON r.id = m.room_id
         WHERE m.room_id = $1 AND m.user_id = $2
         "#,
-        room_id,
-        user_id,
+            room_id,
+            user_id,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| Membership {
         role: role_from_db(&r.role),
@@ -95,8 +98,10 @@ pub struct UserRoom {
 }
 
 pub async fn rooms_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<UserRoom>, sqlx::Error> {
-    let rows = sqlx::query!(
-        r#"
+    let rows = crate::metered::pg(
+        "rooms.rooms_for_user",
+        sqlx::query!(
+            r#"
         SELECT r.id, r.kind, r.name, r.created_at, m.role, m.last_read_id, r.history_floor,
                (SELECT other.user_id FROM memberships other
                 WHERE other.room_id = r.id AND other.user_id <> $1 AND r.kind = 'dm'
@@ -105,9 +110,10 @@ pub async fn rooms_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<UserRoom
         WHERE m.user_id = $1
         ORDER BY r.created_at
         "#,
-        user_id,
+            user_id,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
@@ -130,8 +136,10 @@ pub async fn room_for_user(
     room_id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<UserRoom>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
+    let row = crate::metered::pg(
+        "rooms.room_for_user",
+        sqlx::query!(
+            r#"
         SELECT r.id, r.kind, r.name, r.created_at, m.role, m.last_read_id, r.history_floor,
                (SELECT other.user_id FROM memberships other
                 WHERE other.room_id = r.id AND other.user_id <> $2 AND r.kind = 'dm'
@@ -139,10 +147,11 @@ pub async fn room_for_user(
         FROM memberships m JOIN rooms r ON r.id = m.room_id
         WHERE m.room_id = $1 AND m.user_id = $2
         "#,
-        room_id,
-        user_id,
+            room_id,
+            user_id,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| UserRoom {
         id: r.id,
@@ -158,30 +167,39 @@ pub async fn room_for_user(
 
 /// The IDs of the rooms a user belongs to: what their sockets subscribe to.
 pub async fn room_ids_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar!(
-        "SELECT room_id FROM memberships WHERE user_id = $1",
-        user_id
+    crate::metered::pg(
+        "rooms.room_ids_for_user",
+        sqlx::query_scalar!(
+            "SELECT room_id FROM memberships WHERE user_id = $1",
+            user_id
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }
 
 pub async fn member_ids(pool: &PgPool, room_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar!(
-        "SELECT user_id FROM memberships WHERE room_id = $1",
-        room_id
+    crate::metered::pg(
+        "rooms.member_ids",
+        sqlx::query_scalar!(
+            "SELECT user_id FROM memberships WHERE room_id = $1",
+            room_id
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }
 
 /// How many rooms the user belongs to, for the membership cap.
 pub async fn membership_count(pool: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"SELECT count(*) AS "count!" FROM memberships WHERE user_id = $1"#,
-        user_id
+    crate::metered::pg(
+        "rooms.membership_count",
+        sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM memberships WHERE user_id = $1"#,
+            user_id
+        )
+        .fetch_one(pool),
     )
-    .fetch_one(pool)
     .await
 }
 
@@ -199,22 +217,25 @@ pub async fn create_room(
     );
     let id = Uuid::now_v7();
     let mut tx = pool.begin().await?;
-    let created_at = sqlx::query_scalar!(
+    let created_at = crate::metered::pg("rooms.create_room", sqlx::query_scalar!(
         "INSERT INTO rooms (id, kind, name, created_by) VALUES ($1, $2, $3, $4) RETURNING created_at",
         id,
         kind_to_db(kind),
         name,
         owner_id,
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *tx))
     .await?;
-    sqlx::query!(
-        "INSERT INTO memberships (room_id, user_id, role) VALUES ($1, $2, $3)",
-        id,
-        owner_id,
-        role_to_db(MemberRole::Owner),
+    crate::metered::pg(
+        "rooms.create_room_owner",
+        sqlx::query!(
+            "INSERT INTO memberships (room_id, user_id, role) VALUES ($1, $2, $3)",
+            id,
+            owner_id,
+            role_to_db(MemberRole::Owner),
+        )
+        .execute(&mut *tx),
     )
-    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(UserRoom {
@@ -245,40 +266,49 @@ pub async fn find_or_create_dm(
     let (low, high) = if a < b { (a, b) } else { (b, a) };
     let dm_key = format!("{low}:{high}");
     let mut tx = pool.begin().await?;
-    let inserted = sqlx::query_scalar!(
-        r#"
+    let inserted = crate::metered::pg(
+        "rooms.dm_insert",
+        sqlx::query_scalar!(
+            r#"
         INSERT INTO rooms (id, kind, dm_key, created_by, message_expiry_at)
         VALUES ($1, 'dm', $2, $3, $4)
         ON CONFLICT (dm_key) DO NOTHING
         RETURNING id
         "#,
-        Uuid::now_v7(),
-        dm_key,
-        a,
-        message_expiry_at,
+            Uuid::now_v7(),
+            dm_key,
+            a,
+            message_expiry_at,
+        )
+        .fetch_optional(&mut *tx),
     )
-    .fetch_optional(&mut *tx)
     .await?;
     let (room_id, created) = match inserted {
         Some(id) => (id, true),
         None => (
-            sqlx::query_scalar!("SELECT id FROM rooms WHERE dm_key = $1", dm_key)
-                .fetch_one(&mut *tx)
-                .await?,
+            crate::metered::pg(
+                "rooms.dm_lookup",
+                sqlx::query_scalar!("SELECT id FROM rooms WHERE dm_key = $1", dm_key)
+                    .fetch_one(&mut *tx),
+            )
+            .await?,
             false,
         ),
     };
     // Both members, whether the room is new or not: idempotent.
-    sqlx::query!(
-        r#"
+    crate::metered::pg(
+        "rooms.dm_members",
+        sqlx::query!(
+            r#"
         INSERT INTO memberships (room_id, user_id, role)
         SELECT $1, unnest($2::uuid[]), 'member'
         ON CONFLICT DO NOTHING
         "#,
-        room_id,
-        &[a, b][..],
+            room_id,
+            &[a, b][..],
+        )
+        .execute(&mut *tx),
     )
-    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok((room_id, created))
@@ -295,9 +325,11 @@ pub struct PublicRoomRow {
 /// The public room directory, largest first. Bounded: this is a demo, not a
 /// search engine.
 pub async fn public_rooms(pool: &PgPool, user_id: Uuid) -> Result<Vec<PublicRoomRow>, sqlx::Error> {
-    sqlx::query_as!(
-        PublicRoomRow,
-        r#"
+    crate::metered::pg(
+        "rooms.public_rooms",
+        sqlx::query_as!(
+            PublicRoomRow,
+            r#"
         SELECT r.id, r.name AS "name!",
                count(m.user_id) AS "member_count!",
                bool_or(m.user_id = $1) IS TRUE AS "joined!"
@@ -307,28 +339,31 @@ pub async fn public_rooms(pool: &PgPool, user_id: Uuid) -> Result<Vec<PublicRoom
         ORDER BY count(m.user_id) DESC, r.created_at
         LIMIT 100
         "#,
-        user_id,
+            user_id,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }
 
 /// The room's kind, if it exists.
 pub async fn room_kind(pool: &PgPool, room_id: Uuid) -> Result<Option<RoomKind>, sqlx::Error> {
-    let kind = sqlx::query_scalar!("SELECT kind FROM rooms WHERE id = $1", room_id)
-        .fetch_optional(pool)
-        .await?;
+    let kind = crate::metered::pg(
+        "rooms.room_kind",
+        sqlx::query_scalar!("SELECT kind FROM rooms WHERE id = $1", room_id).fetch_optional(pool),
+    )
+    .await?;
     Ok(kind.as_deref().map(kind_from_db))
 }
 
 /// Adds a member. Returns false if they already were one.
 pub async fn add_member(pool: &PgPool, room_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
+    let result = crate::metered::pg("rooms.add_member", sqlx::query!(
         "INSERT INTO memberships (room_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
         room_id,
         user_id,
     )
-    .execute(pool)
+    .execute(pool))
     .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -341,12 +376,15 @@ pub async fn remove_member(
     room_id: Uuid,
     user_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
-        "DELETE FROM memberships WHERE room_id = $1 AND user_id = $2 AND role = 'member'",
-        room_id,
-        user_id,
+    let result = crate::metered::pg(
+        "rooms.remove_member",
+        sqlx::query!(
+            "DELETE FROM memberships WHERE room_id = $1 AND user_id = $2 AND role = 'member'",
+            room_id,
+            user_id,
+        )
+        .execute(pool),
     )
-    .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -355,18 +393,25 @@ pub async fn remove_member(
 /// Memberships and invites go with it (ON DELETE CASCADE).
 pub async fn delete_room(pool: &PgPool, room_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let members = sqlx::query_scalar!(
-        "SELECT user_id FROM memberships WHERE room_id = $1 FOR UPDATE",
-        room_id
+    let members = crate::metered::pg(
+        "rooms.delete_room_members",
+        sqlx::query_scalar!(
+            "SELECT user_id FROM memberships WHERE room_id = $1 FOR UPDATE",
+            room_id
+        )
+        .fetch_all(&mut *tx),
     )
-    .fetch_all(&mut *tx)
     .await?;
-    sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query!("DELETE FROM message_search WHERE room_id = $1", room_id)
-        .execute(&mut *tx)
-        .await?;
+    crate::metered::pg(
+        "rooms.delete_room",
+        sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id).execute(&mut *tx),
+    )
+    .await?;
+    crate::metered::pg(
+        "rooms.delete_room_search",
+        sqlx::query!("DELETE FROM message_search WHERE room_id = $1", room_id).execute(&mut *tx),
+    )
+    .await?;
     tx.commit().await?;
     Ok(members)
 }
@@ -382,16 +427,19 @@ pub struct DueDemoRoom {
 /// After [`apply_demo_reset`] sets `message_expiry_at` to the next reset, a
 /// room stops being due until then, so the job is idempotent per day.
 pub async fn due_demo_rooms(pool: &PgPool) -> Result<Vec<DueDemoRoom>, sqlx::Error> {
-    sqlx::query_as!(
-        DueDemoRoom,
-        r#"
+    crate::metered::pg(
+        "rooms.due_demo_rooms",
+        sqlx::query_as!(
+            DueDemoRoom,
+            r#"
         SELECT id, name AS "name!"
         FROM rooms
         WHERE is_demo AND (message_expiry_at IS NULL OR message_expiry_at <= now())
         ORDER BY id
         "#,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await
 }
 
@@ -404,13 +452,16 @@ pub async fn apply_demo_reset(
     history_floor: i64,
     message_expiry_at: OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE rooms SET history_floor = $2, message_expiry_at = $3 WHERE id = $1",
-        room_id,
-        history_floor,
-        message_expiry_at,
+    crate::metered::pg(
+        "rooms.apply_demo_reset",
+        sqlx::query!(
+            "UPDATE rooms SET history_floor = $2, message_expiry_at = $3 WHERE id = $1",
+            room_id,
+            history_floor,
+            message_expiry_at,
+        )
+        .execute(pool),
     )
-    .execute(pool)
     .await
     .map(|_| ())
 }
@@ -429,17 +480,20 @@ pub struct MemberRow {
 /// Members, owner first, then by join time. Expired guests that the cleanup
 /// job hasn't removed yet are left out (docs/design.md 11.3).
 pub async fn members(pool: &PgPool, room_id: Uuid) -> Result<Vec<MemberRow>, sqlx::Error> {
-    let rows = sqlx::query!(
-        r#"
+    let rows = crate::metered::pg(
+        "rooms.members",
+        sqlx::query!(
+            r#"
         SELECT u.id, u.handle, u.display_name, u.avatar_url, u.is_guest, m.role, m.joined_at
         FROM memberships m JOIN users u ON u.id = m.user_id
         WHERE m.room_id = $1 AND (u.expires_at IS NULL OR u.expires_at > now())
         ORDER BY m.role = 'owner' DESC, m.joined_at
         LIMIT 1000
         "#,
-        room_id,
+            room_id,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
@@ -463,7 +517,7 @@ pub async fn create_invite(
     expires_at: OffsetDateTime,
     max_uses: i32,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+    crate::metered::pg("rooms.create_invite", sqlx::query!(
         "INSERT INTO invites (code, room_id, created_by, expires_at, max_uses) VALUES ($1, $2, $3, $4, $5)",
         code,
         room_id,
@@ -471,7 +525,7 @@ pub async fn create_invite(
         expires_at,
         max_uses,
     )
-    .execute(pool)
+    .execute(pool))
     .await
     .map(|_| ())
 }
@@ -495,14 +549,17 @@ pub async fn accept_invite(
     user_id: Uuid,
 ) -> Result<InviteOutcome, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let invite = sqlx::query!(
-        r#"
+    let invite = crate::metered::pg(
+        "rooms.accept_invite_lookup",
+        sqlx::query!(
+            r#"
         SELECT room_id, (expires_at > now() AND uses < max_uses) AS "usable!"
         FROM invites WHERE code = $1 FOR UPDATE
         "#,
-        code,
+            code,
+        )
+        .fetch_optional(&mut *tx),
     )
-    .fetch_optional(&mut *tx)
     .await?;
     let Some(invite) = invite else {
         return Ok(InviteOutcome::Invalid);
@@ -510,12 +567,12 @@ pub async fn accept_invite(
     if !invite.usable {
         return Ok(InviteOutcome::Invalid);
     }
-    let inserted = sqlx::query!(
+    let inserted = crate::metered::pg("rooms.accept_invite_join", sqlx::query!(
         "INSERT INTO memberships (room_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
         invite.room_id,
         user_id,
     )
-    .execute(&mut *tx)
+    .execute(&mut *tx))
     .await?
     .rows_affected()
         == 1;
@@ -523,9 +580,11 @@ pub async fn accept_invite(
         tx.rollback().await?;
         return Ok(InviteOutcome::AlreadyMember(invite.room_id));
     }
-    sqlx::query!("UPDATE invites SET uses = uses + 1 WHERE code = $1", code)
-        .execute(&mut *tx)
-        .await?;
+    crate::metered::pg(
+        "rooms.accept_invite_use",
+        sqlx::query!("UPDATE invites SET uses = uses + 1 WHERE code = $1", code).execute(&mut *tx),
+    )
+    .await?;
     tx.commit().await?;
     Ok(InviteOutcome::Joined(invite.room_id))
 }
@@ -539,16 +598,19 @@ pub async fn mark_read(
     user_id: Uuid,
     message_id: i64,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
-        r#"
+    let result = crate::metered::pg(
+        "rooms.mark_read",
+        sqlx::query!(
+            r#"
         UPDATE memberships SET last_read_id = $3
         WHERE room_id = $1 AND user_id = $2 AND last_read_id < $3
         "#,
-        room_id,
-        user_id,
-        message_id,
+            room_id,
+            user_id,
+            message_id,
+        )
+        .execute(pool),
     )
-    .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -568,30 +630,36 @@ pub async fn receipts(
     message_id: i64,
     except: Uuid,
 ) -> Result<ReceiptRow, sqlx::Error> {
-    let count = sqlx::query_scalar!(
-        r#"
+    let count = crate::metered::pg(
+        "rooms.receipts_count",
+        sqlx::query_scalar!(
+            r#"
         SELECT count(*) AS "count!" FROM memberships
         WHERE room_id = $1 AND last_read_id >= $2 AND user_id <> $3
         "#,
-        room_id,
-        message_id,
-        except,
+            room_id,
+            message_id,
+            except,
+        )
+        .fetch_one(pool),
     )
-    .fetch_one(pool)
     .await?;
-    let rows = sqlx::query!(
-        r#"
+    let rows = crate::metered::pg(
+        "rooms.receipts_readers",
+        sqlx::query!(
+            r#"
         SELECT u.id, u.handle, u.display_name, u.avatar_url, u.is_guest, m.role, m.joined_at
         FROM memberships m JOIN users u ON u.id = m.user_id
         WHERE m.room_id = $1 AND m.last_read_id >= $2 AND m.user_id <> $3
         ORDER BY m.last_read_id DESC
         LIMIT 20
         "#,
-        room_id,
-        message_id,
-        except,
+            room_id,
+            message_id,
+            except,
+        )
+        .fetch_all(pool),
     )
-    .fetch_all(pool)
     .await?;
     Ok(ReceiptRow {
         count,
@@ -616,16 +684,19 @@ pub async fn member(
     room_id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<MemberRow>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
+    let row = crate::metered::pg(
+        "rooms.member",
+        sqlx::query!(
+            r#"
         SELECT u.id, u.handle, u.display_name, u.avatar_url, u.is_guest, m.role, m.joined_at
         FROM memberships m JOIN users u ON u.id = m.user_id
         WHERE m.room_id = $1 AND m.user_id = $2
         "#,
-        room_id,
-        user_id,
+            room_id,
+            user_id,
+        )
+        .fetch_optional(pool),
     )
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| MemberRow {
         user_id: r.id,
