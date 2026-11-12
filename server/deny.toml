@@ -6,6 +6,10 @@ all-features = false
 [advisories]
 # Fail on any RustSec advisory (vulnerability, unmaintained, unsound, yanked).
 yanked = "deny"
+# astral-tokio-tar is unmaintained (RUSTSEC-2026-0440) with no safe upgrade. It
+# is a transitive, dev-only dependency of testcontainers (integration tests),
+# never in the production binary, so this is accepted.
+ignore = ["RUSTSEC-2026-0440"]
 
 [licenses]
 # Permissive licenses only. Anything else needs a deliberate exception.
